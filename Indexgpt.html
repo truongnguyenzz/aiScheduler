@@ -118,6 +118,11 @@
           Chuẩn hóa tải JSON đầu vào cho VS Code. Tối ưu và xem preview trong
           extension VS Code. Hỗ trợ Main Tasks và Secondary Tasks theo transfer schema v4.
         </div>
+        <div id="destinationTabPanel" class="settings hidden" style="margin-top:12px;padding:12px;border:1px solid var(--border-color,#ddd);border-radius:8px;">
+          <label for="destinationTabSelect"><strong>Chọn tab đích trong Scheduler Database</strong></label>
+          <select id="destinationTabSelect" style="width:100%;margin-top:6px;"></select>
+          <div class="muted">Chỉ hiển thị các tab hiện có có cấu trúc phù hợp để ghi dữ liệu Scheduler.</div>
+        </div>
         <div id="sourceStatus" class="status"></div>
         <div id="sourcePreview" class="hidden">
           <div class="source-preview-switch">
@@ -325,6 +330,7 @@
           .withSuccessHandler(function (result) {
             currentPreview = result;
             currentTab = result.destinationTab;
+            loadDestinationTabOptions(result.destinationTab);
             currentScheduleSettings = settings;
             setBusy(false);
             document.getElementById("writeButton").disabled = false;
@@ -360,6 +366,55 @@
           .previewNormalization(document.getElementById("sourceId").value, settings, currentTaskSelection);
       }
 
+      function loadDestinationTabOptions(preferredTab) {
+        const panel = document.getElementById("destinationTabPanel");
+        const select = document.getElementById("destinationTabSelect");
+        select.innerHTML = "";
+        panel.classList.remove("hidden");
+        setBusy(true);
+        google.script.run
+          .withSuccessHandler(function (tabs) {
+            setBusy(false);
+            if (!tabs || !tabs.length) {
+              panel.classList.add("hidden");
+              document.getElementById("writeButton").disabled = true;
+              setStatus("sourceStatus",
+                "Không tìm thấy tab phù hợp trong Scheduler Database. Không thể ghi dữ liệu.",
+                true
+              );
+              return;
+            }
+            tabs.forEach(function (tabName) {
+              const option = document.createElement("option");
+              option.value = tabName;
+              option.textContent = tabName;
+              select.appendChild(option);
+            });
+            if (tabs.indexOf(preferredTab) >= 0) {
+              select.value = preferredTab;
+            } else {
+              select.selectedIndex = 0;
+            }
+            document.getElementById("writeButton").disabled = false;
+          })
+          .withFailureHandler(function (error) {
+            setBusy(false);
+            panel.classList.add("hidden");
+            document.getElementById("writeButton").disabled = true;
+            showSourceIdError(error);
+          })
+          .getSchedulerDatabaseTabs();
+      }
+
+      function getSelectedDestinationTab() {
+        const select = document.getElementById("destinationTabSelect");
+        const value = select ? select.value : "";
+        if (!value) {
+          throw new Error("Hãy chọn tab đích trong Scheduler Database.");
+        }
+        return value;
+      }
+
       function writeDatabase() {
         if (!currentPreview) return;
         const message =
@@ -367,7 +422,7 @@
           (currentTaskSelection.includeMain && currentTaskSelection.includeSecondary
             ? "Main + Secondary"
             : currentTaskSelection.includeMain ? "Main" : "Secondary") + " vào tab '" +
-          currentPreview.destinationTab + "' của Scheduler Database?";
+          getSelectedDestinationTab() + "' của Scheduler Database?";
         if (!window.confirm(message)) return;
         setBusy(true);
         setStatus("sourceStatus", "Đang ghi snapshot…", false);
@@ -396,7 +451,8 @@
             document.getElementById("sourceId").value,
             currentPreview.fingerprint,
             currentScheduleSettings,
-            currentTaskSelection
+            currentTaskSelection,
+            getSelectedDestinationTab()
           );
       }
 
