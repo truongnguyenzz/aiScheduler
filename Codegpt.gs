@@ -175,7 +175,7 @@ function exportNormalizationData(sourceInput, settingsInput) {
   return transfer;
 }
 
-function writeDatabaseSnapshot(sourceInput, expectedFingerprint, settingsInput, selectionInput) {
+function writeDatabaseSnapshot(sourceInput, expectedFingerprint, settingsInput, selectionInput, destinationTabInput) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
@@ -192,7 +192,16 @@ function writeDatabaseSnapshot(sourceInput, expectedFingerprint, settingsInput, 
       );
     }
     const database = openDatabase_();
-    const sheet = getOrCreateDatabaseTab_(database, result.destination_tab);
+    const requestedTab = text_(destinationTabInput);
+    if (!requestedTab) {
+      throw new Error("Hãy chọn tab đích trong Scheduler Database trước khi ghi.");
+    }
+    const targetSheet = database.getSheetByName(requestedTab);
+    if (!targetSheet) {
+      throw new Error("Tab '" + requestedTab + "' không tồn tại trong Scheduler Database. Hãy tải lại danh sách tab và chọn lại.");
+    }
+    const sheet = getOrCreateDatabaseTab_(database, requestedTab);
+    result.destination_tab = requestedTab;
     const previousLastRow = sheet.getLastRow();
     if (previousLastRow > 1) {
       sheet.getRange(2, 1, previousLastRow - 1, DATABASE_HEADERS.length)
@@ -230,6 +239,25 @@ function writeDatabaseSnapshot(sourceInput, expectedFingerprint, settingsInput, 
   } finally {
     lock.releaseLock();
   }
+}
+
+function getSchedulerDatabaseTabs() {
+  const database = openDatabase_();
+  return database.getSheets().map(function (sheet) {
+    const lastColumn = Math.max(sheet.getLastColumn(), DATABASE_HEADERS.length);
+    const headers = sheet.getRange(1, 1, 1, DATABASE_HEADERS.length)
+      .getDisplayValues()[0];
+    const isBlank = headers.every(function (value) { return text_(value) === ""; });
+    const isCompatible = sameRow_(headers, DATABASE_HEADERS);
+    return {
+      name: sheet.getName(),
+      compatible: isBlank || isCompatible,
+    };
+  }).filter(function (item) {
+    return item.compatible;
+  }).map(function (item) {
+    return item.name;
+  });
 }
 
 function getCalendarSyncDays(tabName) {
