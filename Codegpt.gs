@@ -2924,7 +2924,7 @@ function description_(
     lines.push("ORIGINAL_DURING: " + formatDecimal2_(originalDuration));
     lines.push(
       "SCHEDULE_ADJUSTMENT: -" +
-        String(Math.round((originalDuration - duration) * 3600) / 3600) +
+        formatDecimal2_((originalDuration - duration)) +
         " hours"
     );
   }
@@ -2975,6 +2975,7 @@ function serializeStartTime_(value, displayValue, timezone) {
 function formatSourceValue_(value) {
   if (value === null || value === undefined) return "";
   if (typeof value === "number") return formatDecimal2_(value);
+  if (/^[+-]?\\d+(?:[.,]\\d+)?$/.test(String(value).trim())) return formatDecimal2_(String(value).trim().replace(",", "."));
   return String(value).trim();
 }
 
