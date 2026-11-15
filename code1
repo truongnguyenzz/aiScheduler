@@ -1,0 +1,2360 @@
+const TEST_SOURCE_SPREADSHEET_ID =
+  "1S8ev72pAVVSWEruT7zPziOr954VyiLxPEkFL1sZB01I";
+const DATABASE_SPREADSHEET_ID =
+  "1xKpFyJ1VccERPuvzAaOzx42uOHD91bkTLbOL4-kuFRM";
+const DATABASE_SPREADSHEET_TITLE = "Scheduler Database";
+const TEST_CALENDAR_TITLE = "AI Scheduler API TEST";
+const SOURCE_TAB_NAME = "TUẦN";
+const DATABASE_HEADERS = [
+  "NGÀY",
+  "THỨ",
+  "STT",
+  "ICON",
+  "CÔNG VIỆC",
+  "DESCRIPTION",
+  "DURING",
+  "CLOCK",
+  "MÀU NỀN",
+  "ID TASK",
+];
+const WEEKDAYS_VI = [
+  "THỨ HAI",
+  "THỨ BA",
+  "THỨ TƯ",
+  "THỨ NĂM",
+  "THỨ SÁU",
+  "THỨ BẢY",
+  "CHỦ NHẬT",
+];
+const LAST_WRITTEN_TAB_PROPERTY = "SCHEDULER_LAST_WRITTEN_TAB";
+const MAX_MASTER_ROWS = 10000;
+const EVENT_TAG_SOURCE = "adaptiveSchedulerTest";
+const TRANSFER_SCHEMA_VERSION = 2;
+const DEFAULT_DAY_START = "07:30";
+const DEFAULT_BREAK_MINUTES = 15;
+const DEFAULT_SLEEP_START = "03:00";
+const DEFAULT_SLEEP_DURATION_HOURS = 5;
+
+function doGet() {
+  return HtmlService.createHtmlOutputFromFile("Index")
+    .setTitle("Scheduler Control");
+}
+
+function getUiConfig() {
+  return {
+    defaultSourceId: TEST_SOURCE_SPREADSHEET_ID,
+    databaseTitle: DATABASE_SPREADSHEET_TITLE,
+    calendarTitle: TEST_CALENDAR_TITLE,
+    defaultStartTime: DEFAULT_DAY_START,
+    defaultBreakMinutes: DEFAULT_BREAK_MINUTES,
+    sleepStartTime: DEFAULT_SLEEP_START,
+    sleepDurationHours: DEFAULT_SLEEP_DURATION_HOURS,
+    lastWrittenTab:
+      PropertiesService.getScriptProperties().getProperty(
+        LAST_WRITTEN_TAB_PROPERTY
+      ) || "",
+  };
+}
+
+function previewNormalization(sourceInput, settingsInput) {
+  const settings = normalizeScheduleSettings_(settingsInput);
+  const result = normalizeSourceSpreadsheet_(sourceInput, settings);
+  return {
+    sourceTitle: result.source_title,
+    sourceId: result.source_spreadsheet_id,
+    destinationTab: result.destination_tab,
+    taskCount: result.task_count,
+    mainTaskCount: result.main_task_count,
+    sleepTaskCount: result.sleep_task_count,
+    unassignedClockCount: result.unassigned_clock_count,
+    flexibleTaskCount: result.flexible_task_count,
+    reducedTaskCount: result.reduced_task_count,
+    scheduleSettings: settings,
+    fingerprint: normalizationFingerprint_(result, settings),
+    taskModes: result.task_modes,
+    taskOriginalDurations: result.task_original_durations,
+    rows: result.rows,
+  };
+}
+
+function exportNormalizationData(sourceInput, settingsInput) {
+  const settings = normalizeScheduleSettings_(settingsInput);
+  const result = normalizeSourceSpreadsheet_(
+    sourceInput,
+    settings,
+    { transferMode: true }
+  );
+  const transfer = {
+    format: "AI_ADAPTIVE_SCHEDULER_TRANSFER",
+    schema_version: TRANSFER_SCHEMA_VERSION,
+    kind: "normalized_input",
+    source: {
+      spreadsheet_id: result.source_spreadsheet_id,
+      spreadsheet_title: result.source_title,
+      source_tab: SOURCE_TAB_NAME,
+      destination_tab: result.destination_tab,
+      week_start: result.week_start,
+      week_end: result.week_end,
+    },
+    schedule_settings: settings,
+    tasks: result.transfer_tasks,
+  };
+  transfer.source_fingerprint = transferSourceFingerprint_(transfer);
+  validateNormalizationTransfer_(transfer);
+  return transfer;
+}
+
+function previewOptimizedSchedule(transferInput) {
+  const validated = validateOptimizedSchedule_(transferInput);
+  const sortedTasks = transferInput.tasks.slice().sort(function (left, right) {
+    return left.date.localeCompare(right.date) ||
+      left.schedule_order - right.schedule_order;
+  });
+  return {
+    fingerprint: fingerprint_(JSON.stringify(transferInput)),
+    destinationTab: validated.destinationTab,
+    taskCount: validated.rows.length,
+    days: validated.days,
+    rows: validated.rows,
+    taskModes: sortedTasks.map(function (task) {
+      return task.task_type === "flexible" &&
+        task.duration_hours !== task.original_duration_hours
+        ? "flexible_adjusted"
+        : task.task_type;
+    }),
+    taskOriginalDurations: sortedTasks.map(function (task) {
+      return task.original_duration_hours;
+    }),
+    warnings: validated.warnings,
+  };
+}
+
+function writeOptimizedSchedule(transferInput, expectedFingerprint) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const validated = validateOptimizedSchedule_(transferInput);
+    if (
+      !expectedFingerprint ||
+      expectedFingerprint !== fingerprint_(JSON.stringify(transferInput))
+    ) {
+      throw new Error(
+        "File lịch đã thay đổi sau khi xem trước. Hãy tải lên và kiểm tra lại."
+      );
+    }
+    const database = openDatabase_();
+    const sheet = getOrCreateDatabaseTab_(
+      database,
+      validated.destinationTab
+    );
+    const previousLastRow = sheet.getLastRow();
+    if (previousLastRow > 1) {
+      sheet
+        .getRange(2, 1, previousLastRow - 1, DATABASE_HEADERS.length)
+        .clearContent();
+    }
+    sheet
+      .getRange(2, 1, validated.rows.length, DATABASE_HEADERS.length)
+      .setValues(validated.rows);
+    PropertiesService.getScriptProperties().setProperty(
+      LAST_WRITTEN_TAB_PROPERTY,
+      validated.destinationTab
+    );
+    return {
+      status: "written",
+      destinationTab: validated.destinationTab,
+      taskCount: validated.rows.length,
+      dayCount: validated.days.length,
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function writeDatabaseSnapshot(sourceInput, expectedFingerprint, settingsInput) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const settings = normalizeScheduleSettings_(settingsInput);
+    const result = normalizeSourceSpreadsheet_(sourceInput, settings);
+    const fingerprint = normalizationFingerprint_(result, settings);
+    if (!expectedFingerprint || expectedFingerprint !== fingerprint) {
+      throw new Error(
+        "Dữ liệu nguồn đã thay đổi sau preview. Hãy preview lại trước khi ghi."
+      );
+    }
+    const database = openDatabase_();
+    const sheet = getOrCreateDatabaseTab_(database, result.destination_tab);
+    const previousLastRow = sheet.getLastRow();
+    if (previousLastRow > 1) {
+      sheet
+        .getRange(2, 1, previousLastRow - 1, DATABASE_HEADERS.length)
+        .clearContent();
+    }
+    sheet
+      .getRange(2, 1, result.rows.length, DATABASE_HEADERS.length)
+      .setValues(result.rows);
+    PropertiesService.getScriptProperties().setProperty(
+      LAST_WRITTEN_TAB_PROPERTY,
+      result.destination_tab
+    );
+    return {
+      status: "written",
+      sourceTitle: result.source_title,
+      destinationTab: result.destination_tab,
+      taskCount: result.task_count,
+      unassignedClockCount: result.unassigned_clock_count,
+      flexibleTaskCount: result.flexible_task_count,
+      reducedTaskCount: result.reduced_task_count,
+      sleepTaskCount: result.sleep_task_count,
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function getCalendarSyncDays(tabName) {
+  return readCalendarDatabase_(tabName).days;
+}
+
+function getCalendarDatabaseTabs() {
+  const database = openDatabase_();
+  return database.getSheets()
+    .map(function (sheet) {
+      const lastRow = sheet.getLastRow();
+      if (lastRow < 2) return null;
+      const headers = sheet
+        .getRange(1, 1, 1, DATABASE_HEADERS.length)
+        .getDisplayValues()[0];
+      if (!sameRow_(headers, DATABASE_HEADERS)) return null;
+      const rows = sheet
+        .getRange(2, 1, lastRow - 1, DATABASE_HEADERS.length)
+        .getValues();
+      const counts = Object.create(null);
+      rows.forEach(function (row, index) {
+        if (!row.some(function (value) {
+          return value !== "" && value !== null;
+        })) {
+          return;
+        }
+        const date = formatDate_(
+          parseDate_(row[0], sheet.getName() + "!A" + (index + 2))
+        );
+        counts[date] = (counts[date] || 0) + 1;
+      });
+      const days = Object.keys(counts).sort();
+      if (!days.length) return null;
+      return {
+        tabName: sheet.getName(),
+        taskCount: rows.filter(function (row) {
+          return row.some(function (value) {
+            return value !== "" && value !== null;
+          });
+        }).length,
+        firstDate: days[0],
+        lastDate: days[days.length - 1],
+        dayCount: days.length,
+      };
+    })
+    .filter(function (tab) { return tab !== null; })
+    .sort(function (left, right) {
+      return right.firstDate.localeCompare(left.firstDate) ||
+        left.tabName.localeCompare(right.tabName);
+    });
+}
+
+function previewCalendarImport(tabName, selectedDates, optionsInput) {
+  const options = normalizeCalendarSyncOptions_(optionsInput);
+  const plan = prepareCalendarPlan_(tabName, selectedDates, options);
+  return Object.assign({}, plan.summary, { fingerprint: plan.fingerprint });
+}
+
+function importCalendarEvents(
+  tabName,
+  expectedFingerprint,
+  selectedDates,
+  optionsInput
+) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    const options = normalizeCalendarSyncOptions_(optionsInput);
+    const plan = prepareCalendarPlan_(tabName, selectedDates, options);
+    if (!expectedFingerprint || expectedFingerprint !== plan.fingerprint) {
+      throw new Error(
+        "Database, lựa chọn ngày hoặc Calendar đã thay đổi sau khi quét. Hãy quét lại trước khi đồng bộ."
+      );
+    }
+    const counts = {
+      created: 0,
+      updated: 0,
+      unchanged: 0,
+      skipped: 0,
+      deleted: 0,
+    };
+    plan.deleteEvents.forEach(function (event) {
+      try {
+        event.deleteEvent();
+        counts.deleted++;
+      } catch (error) {
+        throw new Error(
+          "Không thể xóa event '" +
+            event.getTitle() +
+            "'. Đã xóa " +
+            counts.deleted +
+            " event trước đó. " +
+            error.message
+        );
+      }
+    });
+    plan.items.forEach(function (item) {
+      if (item.status === "skip") {
+        counts.skipped++;
+        return;
+      }
+      if (item.status === "unchanged") {
+        counts.unchanged++;
+        return;
+      }
+
+      let event = item.existing;
+      try {
+        if (!event) {
+          event = plan.calendar.createEvent(
+            item.title,
+            item.start,
+            item.end,
+            { description: item.description }
+          );
+          event.setTag(EVENT_TAG_SOURCE, "1");
+          event.setTag("schedulerTaskId", item.taskId);
+          event.setTag("schedulerTaskDate", item.date);
+          counts.created++;
+        } else {
+          event
+            .setTitle(item.title)
+            .setDescription(item.description)
+            .setTime(item.start, item.end);
+          counts.updated++;
+        }
+        if (item.color) event.setColor(item.color);
+        if (
+          event.getTag(EVENT_TAG_SOURCE) !== "1" ||
+          event.getTag("schedulerTaskId") !== item.taskId ||
+          event.getTag("schedulerTaskDate") !== item.date ||
+          event.getTitle() !== item.title ||
+          event.getDescription() !== item.description ||
+          event.getStartTime().getTime() !== item.start.getTime() ||
+          event.getEndTime().getTime() !== item.end.getTime()
+        ) {
+          throw new Error("Calendar verification did not match the requested event.");
+        }
+      } catch (error) {
+        throw new Error(
+          "Calendar sync stopped after " +
+            counts.created +
+            " created, " +
+            counts.updated +
+            " updated, and " +
+            counts.unchanged +
+            " unchanged event(s). " +
+            error.message
+        );
+      }
+    });
+    return {
+      status: "synced",
+      destinationTab: plan.summary.destinationTab,
+      calendarTitle: TEST_CALENDAR_TITLE,
+      selectedDates: plan.selectedDates,
+      counts: counts,
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function normalizeSourceSpreadsheet_(sourceInput, settings, options) {
+  const sourceId = extractSpreadsheetId_(sourceInput);
+  const source = SpreadsheetApp.openById(sourceId);
+  const sourceSheet = source.getSheetByName(SOURCE_TAB_NAME);
+  if (!sourceSheet) {
+    throw new Error("Không tìm thấy tab nguồn '" + SOURCE_TAB_NAME + "'.");
+  }
+  const timezone = source.getSpreadsheetTimeZone();
+  const readyDateValues = sourceSheet.getRange("M16:M22").getValues();
+  const readyDateDisplays = sourceSheet.getRange("M16:M22").getDisplayValues();
+  const readyTaskDisplays = sourceSheet.getRange("O16:AK22").getDisplayValues();
+  const readyRows = [];
+
+  for (let dayIndex = 0; dayIndex < 7; dayIndex++) {
+    const sourceRow = dayIndex + 16;
+    const tasks = [];
+    for (let offset = 0; offset <= 22; offset += 2) {
+      const taskName = text_(readyTaskDisplays[dayIndex][offset]);
+      if (!taskName) continue;
+      tasks.push({
+        cell: columnToLetter_(15 + offset) + sourceRow,
+        name: taskName,
+      });
+    }
+    readyRows.push({
+      row_number: sourceRow,
+      date: serializeDate_(
+        readyDateValues[dayIndex][0],
+        readyDateDisplays[dayIndex][0],
+        timezone
+      ),
+      tasks: tasks,
+    });
+  }
+
+  const lastRow = findLastMasterRow_(sourceSheet);
+  if (lastRow < 3) throw new Error("MASTER DATABASE không có task trong cột C.");
+  const masterRowCount = lastRow - 2;
+  if (masterRowCount > MAX_MASTER_ROWS) {
+    throw new Error(
+      "MASTER vượt quá " +
+        MAX_MASTER_ROWS +
+        " dòng; dừng để tránh xử lý nhầm vùng dữ liệu."
+    );
+  }
+  const masterRange = sourceSheet.getRange(3, 1, masterRowCount, 9);
+  const masterValues = masterRange.getValues();
+  const masterDisplays = masterRange.getDisplayValues();
+  const masterRows = [];
+  let inheritedGroup = "";
+
+  for (let index = 0; index < masterValues.length; index++) {
+    const values = masterValues[index];
+    const displays = masterDisplays[index];
+    const group = text_(displays[0]);
+    if (group) inheritedGroup = group;
+    if (!text_(displays[2])) continue;
+    masterRows.push({
+      row_number: index + 3,
+      values: [
+        group || inheritedGroup,
+        text_(displays[1]),
+        text_(displays[2]),
+        text_(displays[3]),
+        serializeMasterValue_(values[4], displays[4], timezone),
+        serializeMasterValue_(values[5], displays[5], timezone),
+        serializeMasterValue_(values[6], displays[6], timezone),
+        serializeMasterValue_(values[7], displays[7], timezone),
+        serializeStartTime_(values[8], displays[8], timezone),
+      ],
+    });
+  }
+
+  const normalized = normalizePayload_({
+    source_spreadsheet_id: sourceId,
+    ready_rows: readyRows,
+    master_rows: masterRows,
+  }, settings, options);
+  normalized.source_title = source.getName();
+  return normalized;
+}
+
+function findLastMasterRow_(sheet) {
+  const maxRows = sheet.getMaxRows();
+  if (maxRows < 3) return 2;
+  const lastTaskNameCell = sheet
+    .getRange(3, 3, maxRows - 2, 1)
+    .createTextFinder("\\S")
+    .useRegularExpression(true)
+    .matchFormulaText(false)
+    .findPrevious();
+  return lastTaskNameCell ? lastTaskNameCell.getRow() : 2;
+}
+
+function normalizePayload_(payload, settingsInput, optionsInput) {
+  const settings = normalizeScheduleSettings_(settingsInput);
+  const options = optionsInput || {};
+  const transferMode = options.transferMode === true;
+  const readyRows = payload.ready_rows;
+  const masterRows = payload.master_rows;
+  if (!Array.isArray(readyRows) || readyRows.length !== 7) {
+    throw new Error("READY phải chứa đúng 7 dòng ngày.");
+  }
+  if (!Array.isArray(masterRows) || masterRows.length === 0) {
+    throw new Error("Không tìm thấy dữ liệu trong MASTER.");
+  }
+
+  const dates = readyRows.map(function (row, index) {
+    if (!row || row.row_number !== index + 16) {
+      throw new Error("READY phải ánh xạ đúng các dòng M16:M22.");
+    }
+    return parseDate_(row.date, "READY M" + row.row_number);
+  });
+  for (let day = 0; day < 6; day++) {
+    if (dates[day + 1].getTime() - dates[day].getTime() !== 86400000) {
+      throw new Error("READY M16:M22 phải là 7 ngày liên tiếp.");
+    }
+  }
+  if (dates[0].getDay() !== 1) {
+    throw new Error("READY M16 phải là ngày thứ Hai.");
+  }
+
+  const masterByName = Object.create(null);
+  let inheritedGroup = "";
+  masterRows.forEach(function (master) {
+    if (!master || !Number.isInteger(master.row_number) || master.row_number < 3) {
+      throw new Error("Dòng MASTER không hợp lệ.");
+    }
+    if (!Array.isArray(master.values) || master.values.length < 9) {
+      throw new Error("MASTER dòng " + master.row_number + " phải có đủ A:I.");
+    }
+    const group = text_(master.values[0]);
+    if (group) inheritedGroup = group;
+    const name = text_(master.values[2]);
+    if (!name) return;
+    const key = normalizedName_(name);
+    if (Object.prototype.hasOwnProperty.call(masterByName, key)) {
+      throw new Error(
+        "Tên task MASTER trùng sau chuẩn hóa tại dòng " +
+          masterByName[key].row_number +
+          " và " +
+          master.row_number +
+          ": " +
+          name
+      );
+    }
+    masterByName[key] = {
+      row_number: master.row_number,
+      values: master.values,
+      group_class: group || inheritedGroup,
+    };
+  });
+
+  const dayGroups = [];
+  const seenCells = {};
+  readyRows.forEach(function (readyRow, dayIndex) {
+    const tasks = readyRow.tasks;
+    if (!Array.isArray(tasks)) {
+      throw new Error("Danh sách task READY dòng " + readyRow.row_number + " lỗi.");
+    }
+    const dayTasks = [];
+    tasks.forEach(function (task) {
+      const name = text_(task && task.name);
+      if (!name) return;
+      if (!/^[A-Z]{1,3}\d+$/.test(task.cell || "")) {
+        throw new Error("Địa chỉ ô READY không hợp lệ: " + task.cell);
+      }
+      if (seenCells[task.cell]) {
+        throw new Error("Ô READY bị lặp: " + task.cell);
+      }
+      seenCells[task.cell] = true;
+      const master = masterByName[normalizedName_(name)];
+      if (!master) {
+        throw new Error(
+          "Không tìm thấy task '" + name + "' tại " + task.cell + " trong MASTER cột C."
+        );
+      }
+      const values = master.values;
+      const taskClass = text_(values[1]);
+      const taskName = text_(values[2]);
+      const content = text_(values[3]);
+      const gi = parseDecimal_(values[5], "MASTER F" + master.row_number + " (GI)");
+      const duration = parseDecimal_(
+        values[6],
+        "MASTER G" + master.row_number + " (DURING)"
+      );
+      if (duration <= 0) {
+        throw new Error("MASTER G" + master.row_number + " (DURING) phải lớn hơn 0.");
+      }
+      const start = parseStartTime_(
+        values[8],
+        "MASTER I" + master.row_number + " (Start Time)"
+      );
+      const dateText = formatDate_(dates[dayIndex]);
+      const taskId = internalTaskId_(
+        payload.source_spreadsheet_id,
+        dateText,
+        task.cell
+      );
+      dayTasks.push({
+        date: dateText,
+        weekday: WEEKDAYS_VI[
+          dates[dayIndex].getDay() === 0 ? 6 : dates[dayIndex].getDay() - 1
+        ],
+        sourceOrder: dayTasks.length + 1,
+        sourceCell: task.cell,
+        masterRow: master.row_number,
+        taskId: taskId,
+        taskName: taskName,
+        taskClass: taskClass,
+        content: content,
+        pr: values[4],
+        gi: gi,
+        duration: duration,
+        fixedStart: start,
+        groupClass: master.group_class,
+      });
+    });
+
+    validateUniqueFixedStarts_(dayTasks, dates[dayIndex]);
+    dayGroups.push({
+      date: dates[dayIndex],
+      tasks: dayTasks,
+    });
+  });
+
+  const sleepAnchors = [];
+  for (let offset = -1; offset <= dayGroups.length; offset++) {
+    const anchorDate = new Date(dayGroups[0].date.getTime());
+    anchorDate.setDate(anchorDate.getDate() + offset);
+    sleepAnchors.push(createSleepAnchor_(anchorDate, settings));
+  }
+  const fixedAnchors = [];
+  dayGroups.forEach(function (group) {
+    group.tasks.forEach(function (task) {
+      if (!task.fixedStart) return;
+      const start = dateAtOffset_(group.date, {
+        hour: task.fixedStart.hour,
+        minute: task.fixedStart.minute,
+        second: 0,
+      });
+      fixedAnchors.push({
+        type: "fixed",
+        date: group.date,
+        task: task,
+        taskName: task.taskName,
+        sourceCell: task.sourceCell,
+        start: start,
+        end: new Date(
+          start.getTime() +
+            Math.floor(task.duration * 3600 + 0.5) * 1000
+        ),
+      });
+    });
+  });
+  validateHardAnchorConflicts_(fixedAnchors.concat(sleepAnchors));
+
+  const rows = [];
+  const taskModes = [];
+  const taskOriginalDurations = [];
+  const transferTasks = [];
+  let flexibleTaskCount = 0;
+  let reducedTaskCount = 0;
+  let mainTaskCount = 0;
+  dayGroups.forEach(function (group) {
+    const dayTasks = group.tasks;
+    if (transferMode) {
+      dayTasks.forEach(function (task) {
+        task.scheduledDuration = task.duration;
+        task.reducedBySeconds = 0;
+        if (task.fixedStart) {
+          const fixedStart = dateAtOffset_(group.date, {
+            hour: task.fixedStart.hour,
+            minute: task.fixedStart.minute,
+            second: 0,
+          });
+          task.clock = clockFromDateTimes_(
+            group.date,
+            fixedStart,
+            new Date(
+              fixedStart.getTime() +
+                Math.floor(task.duration * 3600 + 0.5) * 1000
+            )
+          );
+        } else {
+          task.clock = "";
+        }
+      });
+    } else {
+      assignDailySchedule_(
+        dayTasks,
+        group.date,
+        settings,
+        fixedAnchors.concat(sleepAnchors)
+      );
+    }
+    dayTasks.forEach(function (task) {
+      if (!task.fixedStart) flexibleTaskCount++;
+      if (task.reducedBySeconds > 0) reducedTaskCount++;
+      mainTaskCount++;
+      rows.push([
+        task.date,
+        task.weekday,
+        task.sourceOrder,
+        icon_(task.groupClass, task.taskClass),
+        task.taskName,
+        description_(
+          task.taskId,
+          task.taskClass,
+          task.taskName,
+          task.content,
+          task.pr,
+          task.gi,
+          task.scheduledDuration,
+          task.duration
+        ),
+        task.scheduledDuration,
+        task.clock,
+        calendarColor_(task.taskClass, task.gi),
+        task.taskId,
+      ]);
+      taskModes.push(
+        task.fixedStart
+          ? "fixed"
+          : task.reducedBySeconds > 0
+            ? "flexible_adjusted"
+            : "flexible"
+      );
+      taskOriginalDurations.push(task.duration);
+      transferTasks.push({
+        task_id: task.taskId,
+        date: task.date,
+        weekday: task.weekday,
+        source_order: task.sourceOrder,
+        schedule_order: task.sourceOrder,
+        task_type: task.fixedStart ? "fixed" : "flexible",
+        task_name: task.taskName,
+        icon: icon_(task.groupClass, task.taskClass),
+        description: description_(
+          task.taskId,
+          task.taskClass,
+          task.taskName,
+          task.content,
+          task.pr,
+          task.gi,
+          task.duration,
+          task.duration
+        ),
+        duration_hours: task.duration,
+        original_duration_hours: task.duration,
+        fixed_start: task.fixedStart
+          ? twoDigits_(task.fixedStart.hour) +
+            ":" +
+            twoDigits_(task.fixedStart.minute)
+          : null,
+        clock: task.clock || null,
+        color: calendarColor_(task.taskClass, task.gi),
+        source: {
+          ready_cell: task.sourceCell,
+          master_row: task.masterRow,
+        },
+      });
+    });
+
+    const sleepStartSeconds = settings.sleepStartMinutes * 60;
+    const sleepEndSeconds =
+      sleepStartSeconds + Math.floor(settings.sleepDurationHours * 3600 + 0.5);
+    if (sleepEndSeconds > 2 * 86400) {
+      throw new Error("Task Ngủ đêm vượt quá ngày kế tiếp.");
+    }
+    const dateText = formatDate_(group.date);
+    const sleepTaskId = internalSleepTaskId_(
+      payload.source_spreadsheet_id,
+      dateText
+    );
+    rows.push([
+      dateText,
+      WEEKDAYS_VI[
+        group.date.getDay() === 0 ? 6 : group.date.getDay() - 1
+      ],
+      dayTasks.length + 1,
+      "",
+      "Ngủ đêm",
+      "Ngủ đêm hôm nay",
+      settings.sleepDurationHours,
+      formatClock_(sleepStartSeconds, sleepEndSeconds),
+      "GRAY",
+      sleepTaskId,
+    ]);
+    taskModes.push("sleep");
+    taskOriginalDurations.push(settings.sleepDurationHours);
+    transferTasks.push({
+      task_id: sleepTaskId,
+      date: dateText,
+      weekday: WEEKDAYS_VI[
+        group.date.getDay() === 0 ? 6 : group.date.getDay() - 1
+      ],
+      source_order: dayTasks.length + 1,
+      schedule_order: dayTasks.length + 1,
+      task_type: "sleep",
+      task_name: "Ngủ đêm",
+      icon: "",
+      description: "Ngủ đêm hôm nay",
+      duration_hours: settings.sleepDurationHours,
+      original_duration_hours: settings.sleepDurationHours,
+      fixed_start: settings.sleepStartTime,
+      clock: formatClock_(sleepStartSeconds, sleepEndSeconds),
+      color: "GRAY",
+      source: { generated: true },
+    });
+  });
+
+  const startDate = dates[0];
+  const endDate = dates[6];
+  return {
+    source_spreadsheet_id: payload.source_spreadsheet_id,
+    week_start: formatDate_(startDate),
+    week_end: formatDate_(endDate),
+    destination_tab:
+      twoDigits_(startDate.getDate()) +
+      "/" +
+      twoDigits_(startDate.getMonth() + 1) +
+      " - " +
+      twoDigits_(endDate.getDate()) +
+      "/" +
+      twoDigits_(endDate.getMonth() + 1) +
+      "/ " +
+      endDate.getFullYear(),
+    rows: rows,
+    task_modes: taskModes,
+    task_original_durations: taskOriginalDurations,
+    transfer_tasks: transferTasks,
+    task_count: rows.length,
+    unassigned_clock_count: rows.filter(function (row) { return !row[7]; }).length,
+    flexible_task_count: flexibleTaskCount,
+    reduced_task_count: reducedTaskCount,
+    main_task_count: mainTaskCount,
+    sleep_task_count: dayGroups.length,
+  };
+}
+
+function validateOptimizedSchedule_(input) {
+  if (!input || input.format !== "AI_ADAPTIVE_SCHEDULER_TRANSFER") {
+    throw new Error("File không đúng định dạng Scheduler transfer.");
+  }
+  if (
+    input.schema_version !== TRANSFER_SCHEMA_VERSION ||
+    input.kind !== "optimized_schedule"
+  ) {
+    throw new Error(
+      "File không tương thích với phiên bản transfer hiện tại. Hãy cập nhật/deploy Web App mới nhất và xuất lại JSON; file upload phải có schema_version " +
+        TRANSFER_SCHEMA_VERSION +
+        " và kind 'optimized_schedule'."
+    );
+  }
+  if (
+    !input.source ||
+    !text_(input.source.spreadsheet_id) ||
+    !text_(input.source.destination_tab) ||
+    !Array.isArray(input.tasks) ||
+    !input.tasks.length
+  ) {
+    throw new Error("File thiếu thông tin nguồn, tab đích hoặc danh sách task.");
+  }
+  const settings = normalizeScheduleSettings_(input.schedule_settings);
+  const warnings = [];
+  const seenIds = Object.create(null);
+  input.tasks.forEach(function (task, index) {
+    const label = "Task thứ " + (index + 1);
+    if (!task || !text_(task.task_id)) {
+      throw new Error(label + " thiếu task_id.");
+    }
+    if (seenIds[task.task_id]) {
+      throw new Error("ID task bị trùng trong file: " + task.task_id + ".");
+    }
+    seenIds[task.task_id] = true;
+  });
+  const calculatedSourceFingerprint = transferSourceFingerprint_(input);
+  if (input.source_fingerprint !== calculatedSourceFingerprint) {
+    if (!matchesCurrentSourceTransfer_(input, settings)) {
+      throw new Error(
+        "Fingerprint không khớp và dữ liệu trong file không khớp Sheet nguồn hiện tại: file=" +
+          text_(input.source_fingerprint).slice(0, 12) +
+          ", Web App=" +
+          calculatedSourceFingerprint.slice(0, 12) +
+          ". Hãy xuất lại JSON từ Sheet hiện tại; không sửa source_fingerprint."
+      );
+    }
+    warnings.push(
+      "Fingerprint khác cách tính của phiên bản hiện tại; metadata và danh sách task đã được đối chiếu trực tiếp với Google Sheet và khớp."
+    );
+  }
+
+  const orderByDate = Object.create(null);
+  const events = [];
+  const rows = [];
+  const countsByDate = Object.create(null);
+  input.tasks.forEach(function (task, index) {
+    const label = "Task thứ " + (index + 1);
+    if (
+      !task ||
+      !text_(task.task_id) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(text_(task.date)) ||
+      ["fixed", "flexible", "sleep"].indexOf(task.task_type) < 0 ||
+      !text_(task.task_name) ||
+      !task.source ||
+      !Number.isInteger(task.source_order) ||
+      task.source_order < 1 ||
+      !Number.isInteger(task.schedule_order) ||
+      task.schedule_order < 1
+    ) {
+      throw new Error(label + " thiếu trường bắt buộc hoặc có kiểu dữ liệu sai.");
+    }
+    const date = parseDate_(task.date, label + " date");
+    const weekday = WEEKDAYS_VI[
+      date.getDay() === 0 ? 6 : date.getDay() - 1
+    ];
+    if (task.weekday !== weekday) {
+      throw new Error(label + " có weekday không khớp ngày " + task.date + ".");
+    }
+    if (!orderByDate[task.date]) orderByDate[task.date] = Object.create(null);
+    if (orderByDate[task.date][task.schedule_order]) {
+      throw new Error(
+        "schedule_order bị trùng ngày " + task.date + ": " +
+          task.schedule_order + "."
+      );
+    }
+    orderByDate[task.date][task.schedule_order] = true;
+    countsByDate[task.date] = (countsByDate[task.date] || 0) + 1;
+
+    const originalDuration = parseDecimal_(
+      task.original_duration_hours,
+      label + " original_duration_hours"
+    );
+    const duration = parseDecimal_(
+      task.duration_hours,
+      label + " duration_hours"
+    );
+    if (originalDuration <= 0 || duration <= 0) {
+      throw new Error(label + " phải có duration lớn hơn 0.");
+    }
+    if (task.task_type !== "flexible" && duration !== originalDuration) {
+      throw new Error(label + " là mốc cố định và không được đổi duration.");
+    }
+    if (task.task_type === "flexible") {
+      const maxReduction = originalDuration <= 1 ? 0.25 : 0.5;
+      if (
+        duration > originalDuration ||
+        originalDuration - duration > maxReduction + 0.000001 ||
+        Math.floor(duration * 3600 + 0.5) < 60
+      ) {
+        throw new Error(
+          label +
+            " vượt giới hạn duration linh động (không tăng, tối đa giảm 15 phút nếu ≤1 giờ hoặc 30 phút nếu >1 giờ)."
+        );
+      }
+    }
+    if (!text_(task.clock)) {
+      throw new Error(label + " chưa có CLOCK.");
+    }
+    const clock = parseClock_(task.clock, task.task_id);
+    const start = dateAtOffset_(date, clock.start);
+    const end = dateAtOffset_(date, clock.end);
+    const actualDurationSeconds = Math.round((end.getTime() - start.getTime()) / 1000);
+    if (
+      end.getTime() <= start.getTime() ||
+      actualDurationSeconds !== Math.floor(duration * 3600 + 0.5)
+    ) {
+      throw new Error(label + " có CLOCK không khớp duration_hours.");
+    }
+
+    if (task.task_type === "fixed" || task.task_type === "sleep") {
+      const fixedStart = parseStartTime_(
+        task.fixed_start,
+        label + " fixed_start"
+      );
+      if (!fixedStart) {
+        throw new Error(label + " thiếu fixed_start.");
+      }
+      if (
+        clock.start.dayOffset !== 0 ||
+        clock.start.hour !== fixedStart.hour ||
+        clock.start.minute !== fixedStart.minute ||
+        clock.start.second !== 0
+      ) {
+        throw new Error(label + " đã làm lệch giờ bắt đầu cố định.");
+      }
+    } else if (task.fixed_start !== null) {
+      throw new Error(label + " linh động không được có fixed_start.");
+    }
+
+    if (task.task_type === "sleep") {
+      if (
+        task.task_name !== "Ngủ đêm" ||
+        task.description !== "Ngủ đêm hôm nay" ||
+        task.fixed_start !== settings.sleepStartTime ||
+        task.color !== "GRAY"
+      ) {
+        throw new Error(label + " không khớp task Ngủ đêm đã cấu hình.");
+      }
+    } else if (task.task_type === "flexible" || task.task_type === "fixed") {
+      if (!task.source.ready_cell || !Number.isInteger(task.source.master_row)) {
+        throw new Error(label + " thiếu truy xuất nguồn READY/MASTER.");
+      }
+    }
+
+    if (task.color) eventColor_(task.color);
+    events.push({
+      task: task,
+      start: start,
+      end: end,
+    });
+  });
+
+  Object.keys(countsByDate).forEach(function (date) {
+    if (countsByDate[date] !== Object.keys(orderByDate[date]).length) {
+      throw new Error("schedule_order ngày " + date + " không liên tục.");
+    }
+    for (let order = 1; order <= countsByDate[date]; order++) {
+      if (!orderByDate[date][order]) {
+        throw new Error("Thiếu schedule_order " + order + " ngày " + date + ".");
+      }
+    }
+    const sleeps = input.tasks.filter(function (task) {
+      return task.date === date && task.task_type === "sleep";
+    });
+    if (sleeps.length !== 1) {
+      throw new Error("Ngày " + date + " phải có đúng một task Ngủ đêm.");
+    }
+  });
+
+  events.sort(function (left, right) {
+    return left.start.getTime() - right.start.getTime();
+  });
+  for (let index = 1; index < events.length; index++) {
+    const previous = events[index - 1];
+    const current = events[index];
+    const gapMs = current.start.getTime() - previous.end.getTime();
+    if (gapMs < 0) {
+      throw new Error(
+        "Lịch có task chồng lấn: '" +
+          previous.task.task_name +
+          "' và '" +
+          current.task.task_name +
+          "'."
+      );
+    }
+    if (
+      gapMs < settings.breakMinutes * 60000 &&
+      (previous.task.task_type === "flexible" ||
+        current.task.task_type === "flexible")
+    ) {
+      throw new Error(
+        "Thiếu khoảng nghỉ giữa '" +
+          previous.task.task_name +
+          "' và '" +
+          current.task.task_name +
+          "'."
+      );
+    }
+  }
+
+  const sortedTasks = input.tasks.slice().sort(function (left, right) {
+    return left.date.localeCompare(right.date) ||
+      left.schedule_order - right.schedule_order;
+  });
+  sortedTasks.forEach(function (task) {
+    if (task.task_type === "flexible") {
+      const day = parseDate_(task.date, "Ngày task linh động");
+      const rangeStart = dateAtOffset_(day, {
+        hour: Math.floor(settings.defaultStartMinutes / 60),
+        minute: settings.defaultStartMinutes % 60,
+        second: 0,
+      });
+      const nextDay = new Date(day.getTime());
+      nextDay.setDate(nextDay.getDate() + 1);
+      const rangeEnd = dateAtOffset_(nextDay, {
+        hour: Math.floor(settings.defaultStartMinutes / 60),
+        minute: settings.defaultStartMinutes % 60,
+        second: 0,
+      });
+      const interval = events.find(function (event) {
+        return event.task.task_id === task.task_id;
+      });
+      if (
+        interval.start.getTime() < rangeStart.getTime() ||
+        interval.end.getTime() > rangeEnd.getTime()
+      ) {
+        throw new Error(
+          "Task linh động '" + task.task_name +
+            "' nằm ngoài khung giờ lập lịch của ngày " + task.date + "."
+        );
+      }
+    }
+  });
+
+  const days = Object.keys(countsByDate).sort();
+  days.forEach(function (date) {
+    sortedTasks
+      .filter(function (task) { return task.date === date; })
+      .forEach(function (task, index) {
+        const description = optimizedTaskDescription_(task);
+        rows.push([
+          task.date,
+          task.weekday,
+          index + 1,
+          task.icon || "",
+          task.task_name,
+          description,
+          Math.round(task.duration_hours * 100) / 100,
+          task.clock,
+          task.color || "",
+          task.task_id,
+        ]);
+      });
+  });
+  return {
+    destinationTab: input.source.destination_tab,
+    rows: rows,
+    days: days.map(function (date) {
+      return { date: date, taskCount: countsByDate[date] };
+    }),
+    warnings: warnings,
+  };
+}
+
+function transferSourceFingerprint_(transfer) {
+  return fingerprint_(JSON.stringify(transferSourceProjection_(transfer)));
+}
+
+function transferSourceProjection_(transfer) {
+  return {
+    source: {
+      spreadsheet_id: transfer.source.spreadsheet_id,
+      spreadsheet_title: transfer.source.spreadsheet_title,
+      source_tab: transfer.source.source_tab,
+      destination_tab: transfer.source.destination_tab,
+      week_start: transfer.source.week_start,
+      week_end: transfer.source.week_end,
+    },
+    settings: {
+      defaultStartTime: transfer.schedule_settings.defaultStartTime,
+      breakMinutes: transfer.schedule_settings.breakMinutes,
+      sleepStartTime: transfer.schedule_settings.sleepStartTime,
+      sleepDurationHours: transfer.schedule_settings.sleepDurationHours,
+    },
+    tasks: transfer.tasks
+      .map(function (task) {
+        return {
+          task_id: task.task_id,
+          date: task.date,
+          weekday: task.weekday,
+          source_order: task.source_order,
+          task_type: task.task_type,
+          task_name: task.task_name,
+          icon: task.icon,
+          description: task.description,
+          original_duration_hours: task.original_duration_hours,
+          fixed_start: task.fixed_start,
+          color: task.color,
+          source: task.source,
+        };
+      })
+      .sort(function (left, right) {
+        return left.task_id.localeCompare(right.task_id);
+      }),
+  };
+}
+
+function matchesCurrentSourceTransfer_(transfer, settings) {
+  const current = normalizeSourceSpreadsheet_(
+    transfer.source.spreadsheet_id,
+    settings,
+    { transferMode: true }
+  );
+  const expected = {
+    source: {
+      spreadsheet_id: current.source_spreadsheet_id,
+      spreadsheet_title: current.source_title,
+      source_tab: SOURCE_TAB_NAME,
+      destination_tab: current.destination_tab,
+      week_start: current.week_start,
+      week_end: current.week_end,
+    },
+    schedule_settings: settings,
+    tasks: current.transfer_tasks,
+  };
+  return JSON.stringify(transferSourceProjection_(transfer)) ===
+    JSON.stringify(transferSourceProjection_(expected));
+}
+
+function validateNormalizationTransfer_(transfer) {
+  const hasOwn = Object.prototype.hasOwnProperty;
+  if (
+    transfer.schema_version !== TRANSFER_SCHEMA_VERSION ||
+    transfer.kind !== "normalized_input" ||
+    !Array.isArray(transfer.tasks) ||
+    !transfer.tasks.length
+  ) {
+    throw new Error("Không thể tạo JSON theo schema transfer hiện tại.");
+  }
+  transfer.tasks.forEach(function (task, index) {
+    if (
+      !task ||
+      !hasOwn.call(task, "fixed_start") ||
+      !hasOwn.call(task, "clock")
+    ) {
+      throw new Error(
+        "Task thứ " + (index + 1) +
+          " thiếu fixed_start hoặc clock; không thể tải JSON transfer."
+      );
+    }
+    if (
+      task.task_type === "flexible" &&
+      (task.fixed_start !== null || task.clock !== null)
+    ) {
+      throw new Error(
+        "Task linh động phải có fixed_start và clock bằng null trong JSON đầu vào."
+      );
+    }
+  });
+  if (transfer.source_fingerprint !== transferSourceFingerprint_(transfer)) {
+    throw new Error("Fingerprint JSON đầu vào không hợp lệ; không thể tải file.");
+  }
+}
+
+function optimizedTaskDescription_(task) {
+  const duration = Math.round(task.duration_hours * 100) / 100;
+  let description = String(task.description || "").replace(
+    /^DURING:.*$/m,
+    "DURING: " + duration
+  );
+  if (duration !== task.original_duration_hours) {
+    description +=
+      "\nORIGINAL_DURING: " +
+      task.original_duration_hours +
+      "\nSCHEDULE_ADJUSTMENT: -" +
+      Math.round((task.original_duration_hours - duration) * 100) / 100 +
+      " hours";
+  }
+  return description;
+}
+
+function normalizeScheduleSettings_(input) {
+  const settings = input || {};
+  const startText =
+    settings.defaultStartTime === undefined
+      ? DEFAULT_DAY_START
+      : text_(settings.defaultStartTime);
+  const parsedStart = parseStartTime_(startText, "Giờ bắt đầu mặc định");
+  if (!parsedStart) {
+    throw new Error("Giờ bắt đầu mặc định không được để trống.");
+  }
+  const breakText =
+    settings.breakMinutes === undefined
+      ? String(DEFAULT_BREAK_MINUTES)
+      : String(settings.breakMinutes).trim();
+  if (!/^\d+$/.test(breakText)) {
+    throw new Error("Khoảng nghỉ phải là số phút nguyên không âm.");
+  }
+  const breakMinutes = Number(breakText);
+  if (breakMinutes > 180) {
+    throw new Error("Khoảng nghỉ không được vượt quá 180 phút.");
+  }
+  const sleepStartText =
+    settings.sleepStartTime === undefined
+      ? DEFAULT_SLEEP_START
+      : text_(settings.sleepStartTime);
+  const sleepStart = parseStartTime_(sleepStartText, "Giờ bắt đầu Ngủ đêm");
+  if (!sleepStart) {
+    throw new Error("Giờ bắt đầu Ngủ đêm không được để trống.");
+  }
+  const sleepDurationText =
+    settings.sleepDurationHours === undefined
+      ? String(DEFAULT_SLEEP_DURATION_HOURS)
+      : String(settings.sleepDurationHours).trim();
+  const sleepDurationHours = parseDecimal_(
+    sleepDurationText,
+    "Thời lượng Ngủ đêm"
+  );
+  if (sleepDurationHours <= 0 || sleepDurationHours > 24) {
+    throw new Error("Thời lượng Ngủ đêm phải lớn hơn 0 và không quá 24 giờ.");
+  }
+  return {
+    defaultStartTime:
+      twoDigits_(parsedStart.hour) + ":" + twoDigits_(parsedStart.minute),
+    defaultStartMinutes: parsedStart.hour * 60 + parsedStart.minute,
+    breakMinutes: breakMinutes,
+    sleepStartTime:
+      twoDigits_(sleepStart.hour) + ":" + twoDigits_(sleepStart.minute),
+    sleepStartMinutes: sleepStart.hour * 60 + sleepStart.minute,
+    sleepDurationHours: sleepDurationHours,
+  };
+}
+
+function assignDailySchedule_(tasks, date, settings, hardAnchors) {
+  const flexibleTasks = [];
+  tasks.forEach(function (task) {
+    const durationSeconds = Math.floor(task.duration * 3600 + 0.5);
+    task.scheduledDuration = task.duration;
+    task.reducedBySeconds = 0;
+    if (task.fixedStart) {
+      const start = dateAtOffset_(date, {
+        hour: task.fixedStart.hour,
+        minute: task.fixedStart.minute,
+        second: 0,
+      });
+      const end = new Date(start.getTime() + durationSeconds * 1000);
+      task.startDateTime = start;
+      task.clock = clockFromDateTimes_(date, start, end);
+      return;
+    }
+    task.durationSeconds = durationSeconds;
+    flexibleTasks.push(task);
+  });
+  if (!flexibleTasks.length) return;
+
+  const windowStart = dateAtOffset_(date, {
+    hour: Math.floor(settings.defaultStartMinutes / 60),
+    minute: settings.defaultStartMinutes % 60,
+    second: 0,
+  });
+  const nextDate = new Date(date.getTime());
+  nextDate.setDate(nextDate.getDate() + 1);
+  const windowEnd = dateAtOffset_(nextDate, {
+    hour: Math.floor(settings.defaultStartMinutes / 60),
+    minute: settings.defaultStartMinutes % 60,
+    second: 0,
+  });
+  const breakMs = settings.breakMinutes * 60000;
+  const relevantAnchors = hardAnchors
+    .filter(function (anchor) {
+      return (
+        anchor.start.getTime() < windowEnd.getTime() + breakMs &&
+        anchor.end.getTime() > windowStart.getTime() - breakMs
+      );
+    })
+    .sort(function (left, right) {
+      return left.start.getTime() - right.start.getTime();
+    });
+  const slots = [];
+  let cursor = windowStart.getTime();
+  let previousAnchor = null;
+  relevantAnchors.forEach(function (anchor) {
+    const gapStart = previousAnchor
+      ? Math.max(cursor, previousAnchor.end.getTime() + breakMs)
+      : cursor;
+    const gapEnd = Math.min(anchor.start.getTime() - breakMs, windowEnd.getTime());
+    if (gapEnd > gapStart) {
+      slots.push({
+        start: gapStart,
+        end: gapEnd,
+        capacitySeconds: Math.floor((gapEnd - gapStart) / 1000),
+      });
+    }
+    cursor = Math.max(cursor, anchor.end.getTime());
+    previousAnchor = anchor;
+  });
+  const finalGapStart = previousAnchor
+    ? Math.max(cursor, previousAnchor.end.getTime() + breakMs)
+    : cursor;
+  if (windowEnd.getTime() > finalGapStart) {
+    slots.push({
+      start: finalGapStart,
+      end: windowEnd.getTime(),
+      capacitySeconds: Math.floor((windowEnd.getTime() - finalGapStart) / 1000),
+    });
+  }
+
+  const taskCount = flexibleTasks.length;
+  if (taskCount > 12) {
+    throw new Error("Một ngày không thể có quá 12 task linh động theo vùng READY.");
+  }
+  const fixedTasksForDay = tasks.filter(function (task) {
+    return !!task.fixedStart;
+  });
+  const allMask = (1 << taskCount) - 1;
+  const maxReductions = flexibleTasks.map(function (task) {
+    const limitSeconds = task.duration <= 1 ? 15 * 60 : 30 * 60;
+    return Math.min(limitSeconds, Math.max(0, task.durationSeconds - 60));
+  });
+  const breakSeconds = settings.breakMinutes * 60;
+  const memo = Object.create(null);
+
+  function solve(slotIndex, placedMask) {
+    if (placedMask === allMask) {
+      return { reduction: 0, inversions: 0, sequence: [], choices: [] };
+    }
+    if (slotIndex >= slots.length) return null;
+    const key = slotIndex + "|" + placedMask;
+    if (Object.prototype.hasOwnProperty.call(memo, key)) return memo[key];
+    const remaining = allMask ^ placedMask;
+    let best = null;
+    let subset = remaining;
+    while (true) {
+      const indexes = [];
+      let totalSeconds = 0;
+      let totalReductionLimit = 0;
+      for (let index = 0; index < taskCount; index++) {
+        if (!(subset & (1 << index))) continue;
+        indexes.push(index);
+        totalSeconds += flexibleTasks[index].durationSeconds;
+        totalReductionLimit += maxReductions[index];
+      }
+      const demand =
+        totalSeconds + Math.max(0, indexes.length - 1) * breakSeconds;
+      const requiredReduction = Math.max(
+        0,
+        demand - slots[slotIndex].capacitySeconds
+      );
+      if (requiredReduction <= totalReductionLimit) {
+        let inversionCount = 0;
+        indexes.forEach(function (index) {
+          for (let previous = index + 1; previous < taskCount; previous++) {
+            if (placedMask & (1 << previous)) inversionCount++;
+          }
+          const task = flexibleTasks[index];
+          const startsAfterFixed = fixedTasksForDay.filter(function (fixed) {
+            return (
+              task.sourceOrder < fixed.sourceOrder &&
+              slots[slotIndex].start >= fixed.startDateTime.getTime()
+            );
+          }).length;
+          const startsBeforeFixed = fixedTasksForDay.filter(function (fixed) {
+            return (
+              task.sourceOrder > fixed.sourceOrder &&
+              slots[slotIndex].start < fixed.startDateTime.getTime()
+            );
+          }).length;
+          inversionCount += startsAfterFixed + startsBeforeFixed;
+        });
+        const next = solve(slotIndex + 1, placedMask | subset);
+        if (next) {
+          const candidate = {
+            reduction: requiredReduction + next.reduction,
+            inversions: inversionCount + next.inversions,
+            sequence: indexes.concat(next.sequence),
+            choices: [subset].concat(next.choices),
+          };
+          if (
+            !best ||
+            candidate.reduction < best.reduction ||
+            (candidate.reduction === best.reduction &&
+              (candidate.inversions < best.inversions ||
+                (candidate.inversions === best.inversions &&
+                  compareIndexSequences_(candidate.sequence, best.sequence) < 0)))
+          ) {
+            best = candidate;
+          }
+        }
+      }
+      if (subset === 0) break;
+      subset = (subset - 1) & remaining;
+    }
+    memo[key] = best;
+    return best;
+  }
+
+  const solution = solve(0, 0);
+  if (!solution) {
+    throw new Error(
+      "Không thể xếp đủ task linh động ngày " +
+        formatDate_(date) +
+        " mà không chồng lên Start Time hoặc Ngủ đêm, kể cả khi giảm duration trong giới hạn cho phép. Task: " +
+        flexibleTasks
+          .map(function (task) {
+            return task.taskName + " (" + task.sourceCell + ")";
+          })
+          .join(", ") +
+        "."
+    );
+  }
+
+  solution.choices.forEach(function (mask, slotIndex) {
+    const indexes = [];
+    for (let index = 0; index < taskCount; index++) {
+      if (mask & (1 << index)) indexes.push(index);
+    }
+    let demand = indexes.reduce(function (total, index) {
+      return total + flexibleTasks[index].durationSeconds;
+    }, 0) + Math.max(0, indexes.length - 1) * breakSeconds;
+    let reductionRemaining = Math.max(
+      0,
+      demand - slots[slotIndex].capacitySeconds
+    );
+    for (let position = indexes.length - 1; position >= 0; position--) {
+      const index = indexes[position];
+      const reduction = Math.min(
+        maxReductions[index],
+        reductionRemaining
+      );
+      flexibleTasks[index].reducedBySeconds = reduction;
+      flexibleTasks[index].scheduledDuration =
+        (flexibleTasks[index].durationSeconds - reduction) / 3600;
+      reductionRemaining -= reduction;
+    }
+    if (reductionRemaining > 0) {
+      throw new Error("Lỗi nội bộ khi áp dụng giới hạn giảm duration.");
+    }
+
+    let taskStart = slots[slotIndex].start;
+    indexes.forEach(function (index) {
+      const task = flexibleTasks[index];
+      const durationSeconds =
+        task.durationSeconds - task.reducedBySeconds;
+      const taskEnd = taskStart + durationSeconds * 1000;
+      task.clock = clockFromDateTimes_(
+        date,
+        new Date(taskStart),
+        new Date(taskEnd)
+      );
+      taskStart = taskEnd + breakSeconds * 1000;
+    });
+  });
+
+  if (tasks.some(function (task) { return !task.clock; })) {
+    throw new Error("Scheduler không tạo được CLOCK cho tất cả task.");
+  }
+}
+
+function compareIndexSequences_(left, right) {
+  const length = Math.min(left.length, right.length);
+  for (let index = 0; index < length; index++) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return left.length - right.length;
+}
+
+function validateHardAnchorConflicts_(anchors) {
+  const sorted = anchors.slice().sort(function (left, right) {
+    return left.start.getTime() - right.start.getTime();
+  });
+  let active = null;
+  sorted.forEach(function (anchor) {
+    if (active && anchor.start.getTime() < active.end.getTime()) {
+      const anchorLabel =
+        "'" + anchor.taskName + "'" +
+        (anchor.sourceCell ? " (" + anchor.sourceCell + ")" : "") +
+        " ngày " +
+        formatDate_(anchor.date) +
+        " [" +
+        clockFromDateTimes_(anchor.date, anchor.start, anchor.end) +
+        "]";
+      const activeLabel =
+        "'" + active.taskName + "'" +
+        (active.sourceCell ? " (" + active.sourceCell + ")" : "") +
+        " ngày " +
+        formatDate_(active.date) +
+        " [" +
+        clockFromDateTimes_(active.date, active.start, active.end) +
+        "]";
+      throw new Error(
+        "Xung đột mốc cố định: " +
+          activeLabel +
+          " và " +
+          anchorLabel +
+          " có khoảng thời gian chồng lấn. Hãy sửa Start Time hoặc cấu hình Ngủ đêm."
+      );
+    }
+    if (!active || anchor.end.getTime() > active.end.getTime()) active = anchor;
+  });
+}
+
+function createSleepAnchor_(date, settings) {
+  const start = dateAtOffset_(date, {
+    hour: Math.floor(settings.sleepStartMinutes / 60),
+    minute: settings.sleepStartMinutes % 60,
+    second: 0,
+    dayOffset: 0,
+  });
+  const durationSeconds = Math.floor(settings.sleepDurationHours * 3600 + 0.5);
+  return {
+    type: "sleep",
+    date: date,
+    taskName: "Ngủ đêm",
+    start: start,
+    end: new Date(start.getTime() + durationSeconds * 1000),
+  };
+}
+
+function clockFromDateTimes_(baseDate, start, end) {
+  const midnight = new Date(
+    baseDate.getFullYear(),
+    baseDate.getMonth(),
+    baseDate.getDate()
+  );
+  const startSeconds = Math.round((start.getTime() - midnight.getTime()) / 1000);
+  const endSeconds = Math.round((end.getTime() - midnight.getTime()) / 1000);
+  return formatClock_(startSeconds, endSeconds);
+}
+
+function validateUniqueFixedStarts_(tasks, date) {
+  const taskByStart = {};
+  tasks.forEach(function (task) {
+    if (!task.fixedStart) return;
+    const startMinutes = task.fixedStart.hour * 60 + task.fixedStart.minute;
+    const previous = taskByStart[startMinutes];
+    if (previous) {
+      throw new Error(
+        "Start Time bị trùng ngày " +
+          formatDate_(date) +
+          ": '" +
+          previous.taskName +
+          "' (" +
+          previous.sourceCell +
+          ") và '" +
+          task.taskName +
+          "' (" +
+          task.sourceCell +
+          ") cùng bắt đầu lúc " +
+          twoDigits_(task.fixedStart.hour) +
+          ":" +
+          twoDigits_(task.fixedStart.minute) +
+          ". Hãy sửa dữ liệu MASTER trước khi xếp lịch."
+      );
+    }
+    taskByStart[startMinutes] = task;
+  });
+}
+
+function formatClock_(startSeconds, endSeconds) {
+  function endpoint(totalSeconds) {
+    const dayOffset = Math.floor(totalSeconds / 86400);
+    const timeOfDay = totalSeconds % 86400;
+    const hour = Math.floor(timeOfDay / 3600);
+    const minute = Math.floor((timeOfDay % 3600) / 60);
+    const second = timeOfDay % 60;
+    return (
+      twoDigits_(hour) +
+      ":" +
+      twoDigits_(minute) +
+      (second ? ":" + twoDigits_(second) : "") +
+      (dayOffset ? " (+" + dayOffset + " ngày)" : "")
+    );
+  }
+  return endpoint(startSeconds) + " - " + endpoint(endSeconds);
+}
+
+function internalSleepTaskId_(sourceId, taskDate) {
+  const digest = fingerprint_("SLEEP|" + sourceId + "|" + taskDate)
+    .slice(0, 24)
+    .toUpperCase();
+  return "ADP-" + digest;
+}
+
+function normalizationFingerprint_(result, settings) {
+  return fingerprint_(
+    result.destination_tab + "|" + JSON.stringify(settings) + "|" +
+      JSON.stringify(result.rows)
+  );
+}
+
+function prepareCalendarPlan_(tabNameInput, selectedDatesInput, options) {
+  const tabName = text_(tabNameInput);
+  const database = readCalendarDatabase_(tabName);
+  const selectedDates = normalizeSelectedDates_(
+    selectedDatesInput,
+    database.days
+  );
+  const selectedDateSet = {};
+  selectedDates.forEach(function (date) {
+    selectedDateSet[date] = true;
+  });
+  const records = [];
+  const seenKeys = {};
+  const sequenceByDate = {};
+  const sleepByDate = {};
+
+  for (let index = 1; index < database.values.length; index++) {
+    const row = database.values[index];
+    if (!row.some(function (value) { return value !== "" && value !== null; })) {
+      continue;
+    }
+    const dateText = formatDate_(parseDate_(row[0], "Database A" + (index + 1)));
+    if (!selectedDateSet[dateText]) continue;
+    const taskId = text_(row[9]);
+    const name = text_(row[4]);
+    if (!taskId || !name) {
+      throw new Error(
+        "Database dòng " + (index + 1) + " thiếu ID TASK hoặc CÔNG VIỆC."
+      );
+    }
+    const key = taskId + "|" + dateText;
+    if (seenKeys[key]) {
+      throw new Error("ID TASK bị trùng trong database: " + taskId);
+    }
+    seenKeys[key] = true;
+    if (!text_(row[7])) {
+      throw new Error(
+        "Task '" +
+          name +
+          "' ngày " +
+          dateText +
+          " chưa có CLOCK. Hãy ghi lại snapshot trước khi đồng bộ."
+      );
+    }
+    const sourceOrder = Number(row[2]);
+    if (!Number.isInteger(sourceOrder) || sourceOrder < 1) {
+      throw new Error("STT không hợp lệ trong database dòng " + (index + 1) + ".");
+    }
+    sequenceByDate[dateText] = (sequenceByDate[dateText] || 0) + 1;
+    if (sourceOrder !== sequenceByDate[dateText]) {
+      throw new Error(
+        "STT không liên tục theo thứ tự nguồn trong ngày " +
+          dateText +
+          "; từ chối đồng bộ sai thứ tự."
+      );
+    }
+    const clock = parseClock_(row[7], taskId);
+    const taskDate = parseDate_(dateText, "Ngày task");
+    const start = dateAtOffset_(taskDate, clock.start);
+    const end = dateAtOffset_(taskDate, clock.end);
+    if (end.getTime() <= start.getTime()) {
+      throw new Error("CLOCK không hợp lệ hoặc qua nửa đêm cho task " + taskId + ".");
+    }
+    const duration = parseDecimal_(
+      row[6],
+      "Database G" + (index + 1) + " (DURING)"
+    );
+    if (duration <= 0 || Math.floor(duration * 3600 + 0.5) * 1000 !== end - start) {
+      throw new Error(
+        "CLOCK không khớp DURING trong database dòng " + (index + 1) + "."
+      );
+    }
+    const isSleepTask =
+      name === "Ngủ đêm" && text_(row[5]) === "Ngủ đêm hôm nay";
+    if (isSleepTask) sleepByDate[dateText] = (sleepByDate[dateText] || 0) + 1;
+    records.push({
+      date: dateText,
+      sourceOrder: sourceOrder,
+      taskId: taskId,
+      taskName: name,
+      title: text_(row[3]) ? text_(row[3]) + " " + name : name,
+      description: text_(row[5]),
+      isSleepTask: isSleepTask,
+      colorName: isSleepTask ? "GRAY" : text_(row[8]),
+      start: start,
+      end: end,
+      status: "",
+      existing: null,
+    });
+  }
+
+  selectedDates.forEach(function (date) {
+    if (!sequenceByDate[date]) {
+      throw new Error("Database không có task cho ngày đã chọn " + date + ".");
+    }
+    if (sleepByDate[date] !== 1) {
+      throw new Error(
+        "Ngày " + date +
+          " phải có đúng một task 'Ngủ đêm' với DESCRIPTION 'Ngủ đêm hôm nay'."
+      );
+    }
+  });
+
+  const calendar = getTestCalendar_();
+  const firstDate = parseDate_(selectedDates[0], "Ngày đồng bộ");
+  const lastDate = parseDate_(selectedDates[selectedDates.length - 1], "Ngày đồng bộ");
+  const scanStart = new Date(firstDate.getTime());
+  const scanEnd = new Date(lastDate.getTime());
+  scanEnd.setDate(scanEnd.getDate() + 2);
+  const scannedEvents = calendar.getEvents(scanStart, scanEnd);
+  const relevantEvents = scannedEvents.filter(function (event) {
+    const ownerDate = event.getTag("schedulerTaskDate");
+    if (
+      event.getTag(EVENT_TAG_SOURCE) === "1" &&
+      selectedDateSet[ownerDate]
+    ) {
+      return true;
+    }
+    return selectedDates.some(function (date) {
+      const dayStart = parseDate_(date, "Ngày đồng bộ");
+      const dayEnd = new Date(dayStart.getTime());
+      dayEnd.setDate(dayEnd.getDate() + 1);
+      return (
+        event.getStartTime().getTime() < dayEnd.getTime() &&
+        event.getEndTime().getTime() > dayStart.getTime()
+      );
+    });
+  });
+  const managedByKey = {};
+  const deleteEvents = [];
+  relevantEvents.forEach(function (event) {
+    if (event.getTag(EVENT_TAG_SOURCE) !== "1") return;
+    const taskId = event.getTag("schedulerTaskId");
+    const taskDate = event.getTag("schedulerTaskDate");
+    if (!taskId || !taskDate) return;
+    const key = taskId + "|" + taskDate;
+    if (!managedByKey[key]) managedByKey[key] = [];
+    managedByKey[key].push(event);
+    if (options.deleteManaged && selectedDateSet[taskDate]) {
+      deleteEvents.push(event);
+    }
+  });
+
+  let createCount = 0;
+  let updateCount = 0;
+  let unchangedCount = 0;
+  const items = options.createUpdate ? records : [];
+  items.forEach(function (item) {
+    const key = item.taskId + "|" + item.date;
+    const matches = options.deleteManaged ? [] : (managedByKey[key] || []);
+    if (matches.length > 1) {
+      throw new Error(
+        "Có nhiều Calendar event được quản lý cho task " +
+          item.taskId +
+          " ngày " +
+          item.date +
+          "; không thay đổi Calendar."
+      );
+    }
+    item.existing = matches.length ? matches[0] : null;
+    if (!item.existing) {
+      const unmanagedDuplicate = relevantEvents.find(function (event) {
+        const managed = event.getTag(EVENT_TAG_SOURCE) === "1";
+        const sameTitle =
+          event.getTitle() === item.title ||
+          event.getTitle() === item.taskName;
+        return (
+          !managed &&
+          sameTitle &&
+          event.getStartTime().getTime() === item.start.getTime() &&
+          event.getEndTime().getTime() === item.end.getTime()
+        );
+      });
+      if (unmanagedDuplicate) {
+        throw new Error(
+          "Calendar có event không do ứng dụng quản lý nhưng trùng tên và giờ: '" +
+            item.title +
+            "' ngày " +
+            item.date +
+            ". Hãy kiểm tra event đó trước khi đồng bộ."
+        );
+      }
+    }
+    item.color = eventColor_(item.colorName);
+    if (!item.existing) {
+      item.status = "create";
+      createCount++;
+    } else if (eventNeedsUpdate_(item.existing, item)) {
+      item.status = "update";
+      updateCount++;
+    } else {
+      item.status = "unchanged";
+      unchangedCount++;
+    }
+  });
+
+  const eventSnapshot = relevantEvents.map(function (event) {
+    return [
+      event.getId(),
+      event.getTitle(),
+      event.getDescription() || "",
+      event.getStartTime().getTime(),
+      event.getEndTime().getTime(),
+      event.getTag(EVENT_TAG_SOURCE) || "",
+      event.getTag("schedulerTaskId") || "",
+      event.getTag("schedulerTaskDate") || "",
+      event.getLastUpdated().getTime(),
+    ];
+  });
+  const taskSnapshot = records.map(function (item) {
+    return [
+      item.taskId,
+      item.date,
+      item.sourceOrder,
+      item.title,
+      item.description || "",
+      item.start.getTime(),
+      item.end.getTime(),
+      item.colorName || "",
+    ];
+  });
+  const fingerprint = fingerprint_(
+    tabName +
+      "|" +
+      JSON.stringify(selectedDates) +
+      "|" +
+      JSON.stringify(options) +
+      "|" +
+      JSON.stringify(taskSnapshot) +
+      "|" +
+      JSON.stringify(eventSnapshot)
+  );
+  return {
+    calendar: calendar,
+    selectedDates: selectedDates,
+    items: items,
+    deleteEvents: deleteEvents,
+    fingerprint: fingerprint,
+    summary: {
+      destinationTab: tabName,
+      calendarTitle: TEST_CALENDAR_TITLE,
+      selectedDates: database.days.filter(function (day) {
+        return selectedDateSet[day.date];
+      }),
+      options: options,
+      createCount: createCount,
+      updateCount: updateCount,
+      unchangedCount: unchangedCount,
+      deleteCount: deleteEvents.length,
+      skippedCount: 0,
+      calendarEvents: relevantEvents.map(function (event) {
+        const managed = event.getTag(EVENT_TAG_SOURCE) === "1";
+        return {
+          title: event.getTitle(),
+          startDate: formatDate_(event.getStartTime()),
+          startTime: formatTime_(event.getStartTime()),
+          endDate: formatDate_(event.getEndTime()),
+          endTime: formatTime_(event.getEndTime()),
+          managed: managed,
+          taskDate: event.getTag("schedulerTaskDate") || "",
+          deletable: managed && selectedDateSet[event.getTag("schedulerTaskDate")],
+        };
+      }),
+      items: items.map(function (item) {
+        return {
+          date: item.date,
+          weekday: getWeekdayName_(parseDate_(item.date, "Ngày task")),
+          sourceOrder: item.sourceOrder,
+          title: item.title,
+          description: item.description,
+          durationHours: (item.end.getTime() - item.start.getTime()) / 3600000,
+          startDate: formatDate_(item.start),
+          startTime: formatTime_(item.start),
+          endDate: formatDate_(item.end),
+          endTime: formatTime_(item.end),
+          colorName: item.colorName || "",
+          status: item.status,
+        };
+      }),
+    },
+  };
+}
+
+function readCalendarDatabase_(tabNameInput) {
+  const tabName = text_(tabNameInput);
+  const database = openDatabase_();
+  const tabs = database.getSheets().filter(function (sheet) {
+    return sheet.getName() === tabName;
+  });
+  if (tabs.length !== 1) {
+    throw new Error("Không tìm thấy duy nhất tab database '" + tabName + "'.");
+  }
+  const sheet = tabs[0];
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) throw new Error("Tab database không có task để đồng bộ.");
+  const values = sheet.getRange(1, 1, lastRow, DATABASE_HEADERS.length).getValues();
+  if (!sameRow_(values[0], DATABASE_HEADERS)) {
+    throw new Error("Header database không đúng schema; từ chối đồng bộ.");
+  }
+  const counts = {};
+  for (let index = 1; index < values.length; index++) {
+    const row = values[index];
+    if (!row.some(function (value) { return value !== "" && value !== null; })) {
+      continue;
+    }
+    const date = formatDate_(parseDate_(row[0], "Database A" + (index + 1)));
+    counts[date] = (counts[date] || 0) + 1;
+  }
+  const days = Object.keys(counts)
+    .sort()
+    .map(function (date) {
+      return {
+        date: date,
+        weekday: getWeekdayName_(parseDate_(date, "Ngày database")),
+        taskCount: counts[date],
+      };
+    });
+  if (!days.length) throw new Error("Tab database không có ngày task.");
+  return { values: values, days: days };
+}
+
+function normalizeSelectedDates_(input, days) {
+  const available = {};
+  days.forEach(function (day) {
+    available[day.date] = true;
+  });
+  if (input === undefined || input === null) {
+    return days.map(function (day) { return day.date; });
+  }
+  if (!Array.isArray(input) || !input.length) {
+    throw new Error("Hãy chọn ít nhất một ngày để đồng bộ.");
+  }
+  const selected = {};
+  input.forEach(function (value) {
+    const date = text_(value);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !available[date]) {
+      throw new Error("Ngày đồng bộ không tồn tại trong database: " + date + ".");
+    }
+    if (selected[date]) {
+      throw new Error("Ngày đồng bộ bị chọn lặp: " + date + ".");
+    }
+    selected[date] = true;
+  });
+  return days.filter(function (day) {
+    return selected[day.date];
+  }).map(function (day) {
+    return day.date;
+  });
+}
+
+function normalizeCalendarSyncOptions_(input) {
+  const options = input || {};
+  const deleteManaged = options.deleteManaged === true;
+  const createUpdate =
+    options.createUpdate === undefined ? true : options.createUpdate === true;
+  if (!deleteManaged && !createUpdate) {
+    throw new Error("Hãy chọn ít nhất một tùy chọn: xóa lịch hoặc tạo/cập nhật.");
+  }
+  return {
+    deleteManaged: deleteManaged,
+    createUpdate: createUpdate,
+  };
+}
+
+function getWeekdayName_(date) {
+  return WEEKDAYS_VI[date.getDay() === 0 ? 6 : date.getDay() - 1];
+}
+
+function eventNeedsUpdate_(event, item) {
+  if (
+    event.getTitle() !== item.title ||
+    event.getDescription() !== item.description ||
+    event.getStartTime().getTime() !== item.start.getTime() ||
+    event.getEndTime().getTime() !== item.end.getTime()
+  ) {
+    return true;
+  }
+  if (item.color && String(event.getColor()) !== String(item.color)) return true;
+  return false;
+}
+
+function getTestCalendar_() {
+  const matches = CalendarApp.getAllCalendars().filter(function (calendar) {
+    return calendar.getName() === TEST_CALENDAR_TITLE;
+  });
+  if (matches.length !== 1) {
+    throw new Error(
+      "Cần đúng một Calendar test tên '" +
+        TEST_CALENDAR_TITLE +
+        "'; tìm thấy " +
+        matches.length +
+        "."
+    );
+  }
+  return matches[0];
+}
+
+function openDatabase_() {
+  const database = SpreadsheetApp.openById(DATABASE_SPREADSHEET_ID);
+  if (database.getName() !== DATABASE_SPREADSHEET_TITLE) {
+    throw new Error(
+      "Tên workbook đích không đúng; từ chối ghi vào '" +
+        database.getName() +
+        "'."
+    );
+  }
+  return database;
+}
+
+function getOrCreateDatabaseTab_(database, tabName) {
+  const matches = database.getSheets().filter(function (sheet) {
+    return sheet.getName() === tabName;
+  });
+  if (matches.length > 1) {
+    throw new Error("Có nhiều tab trùng tên '" + tabName + "'.");
+  }
+  if (matches.length === 1) {
+    const sheet = matches[0];
+    const headers = sheet
+      .getRange(1, 1, 1, DATABASE_HEADERS.length)
+      .getDisplayValues()[0];
+    if (!sameRow_(headers, DATABASE_HEADERS)) {
+      throw new Error(
+        "Header tab '" + tabName + "' không đúng; từ chối ghi đè."
+      );
+    }
+    return sheet;
+  }
+  const sheet = database.insertSheet(tabName);
+  sheet
+    .getRange(1, 1, 1, DATABASE_HEADERS.length)
+    .setValues([DATABASE_HEADERS]);
+  return sheet;
+}
+
+function extractSpreadsheetId_(input) {
+  const value = text_(input);
+  const linkMatch = value.match(/\/spreadsheets\/d\/([A-Za-z0-9_-]+)/);
+  const id = linkMatch ? linkMatch[1] : value;
+  if (!/^[A-Za-z0-9_-]{20,}$/.test(id)) {
+    throw new Error("Hãy nhập Spreadsheet ID hoặc URL Google Sheets hợp lệ.");
+  }
+  return id;
+}
+
+function parseDate_(value, field) {
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+  const text = text_(value);
+  let match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) return validDate_(+match[1], +match[2], +match[3], field);
+  match = text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (match) return validDate_(+match[3], +match[2], +match[1], field);
+  match = text.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (match) return validDate_(+match[3], +match[2], +match[1], field);
+  throw new Error(field + " có ngày không hợp lệ: '" + text + "'.");
+}
+
+function validDate_(year, month, day, field) {
+  const date = new Date(year, month - 1, day);
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    throw new Error(field + " có ngày không hợp lệ.");
+  }
+  return date;
+}
+
+function parseDecimal_(value, field) {
+  if (typeof value === "boolean" || value === null || text_(value) === "") {
+    throw new Error(field + " đang trống hoặc không phải số.");
+  }
+  const normalized = String(value).trim().replace(",", ".");
+  if (!/^[+-]?\d+(?:\.\d{1,2})?$/.test(normalized)) {
+    throw new Error(field + " có giá trị thập phân không hợp lệ: " + value);
+  }
+  const result = Number(normalized);
+  if (!Number.isFinite(result)) throw new Error(field + " phải là số hữu hạn.");
+  return result;
+}
+
+function parseStartTime_(value, field) {
+  if (value === null || text_(value) === "") return null;
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return { hour: value.getHours(), minute: value.getMinutes() };
+  }
+  if (typeof value === "number") {
+    if (value < 0 || value >= 1) {
+      throw new Error(field + " dạng số phải là phân số giờ Google Sheets.");
+    }
+    const totalMinutes = Math.floor(value * 1440 + 0.5) % 1440;
+    return {
+      hour: Math.floor(totalMinutes / 60),
+      minute: totalMinutes % 60,
+    };
+  }
+  const text = text_(value);
+  let match = text.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (match) {
+    const hour = +match[1];
+    const minute = +match[2];
+    if (hour < 24 && minute < 60) return { hour: hour, minute: minute };
+  }
+  match = text.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (match) {
+    let hour = +match[1];
+    const minute = +match[2];
+    if (hour >= 1 && hour <= 12 && minute < 60) {
+      hour = hour % 12 + (/PM/i.test(match[3]) ? 12 : 0);
+      return { hour: hour, minute: minute };
+    }
+  }
+  throw new Error(field + " có giờ không hợp lệ: '" + text + "'.");
+}
+
+function parseClock_(value, taskId) {
+  const match = text_(value).match(
+    /^(\d{2}):(\d{2})(?::(\d{2}))?(?: \(\+(\d+) ngày\))? - (\d{2}):(\d{2})(?::(\d{2}))?(?: \(\+(\d+) ngày\))?$/
+  );
+  if (!match) {
+    throw new Error("CLOCK không đúng định dạng cho task " + taskId + ".");
+  }
+  const start = {
+    hour: +match[1],
+    minute: +match[2],
+    second: +(match[3] || 0),
+    dayOffset: +(match[4] || 0),
+  };
+  const end = {
+    hour: +match[5],
+    minute: +match[6],
+    second: +(match[7] || 0),
+    dayOffset: +(match[8] || 0),
+  };
+  [start, end].forEach(function (time) {
+    if (
+      time.hour > 23 ||
+      time.minute > 59 ||
+      time.second > 59
+    ) {
+      throw new Error("CLOCK có giờ không hợp lệ cho task " + taskId + ".");
+    }
+  });
+  if (end.dayOffset < start.dayOffset) {
+    throw new Error("CLOCK có thứ tự ngày không hợp lệ cho task " + taskId + ".");
+  }
+  return { start: start, end: end };
+}
+
+function dateAtOffset_(baseDate, time) {
+  const date = new Date(
+    baseDate.getFullYear(),
+    baseDate.getMonth(),
+    baseDate.getDate(),
+    time.hour,
+    time.minute,
+    time.second
+  );
+  date.setDate(date.getDate() + (time.dayOffset || 0));
+  return date;
+}
+
+function normalizedName_(value) {
+  return text_(value).normalize("NFC").replace(/\s+/g, " ").toLowerCase();
+}
+
+function internalTaskId_(sourceId, date, cell) {
+  const bytes = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    sourceId + "|" + date + "|" + cell,
+    Utilities.Charset.UTF_8
+  );
+  const digest = bytes
+    .map(function (byte) {
+      return ("0" + ((byte + 256) % 256).toString(16)).slice(-2);
+    })
+    .join("")
+    .slice(0, 24)
+    .toUpperCase();
+  return "ADP-" + digest;
+}
+
+function fingerprint_(value) {
+  const bytes = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    value,
+    Utilities.Charset.UTF_8
+  );
+  return bytes
+    .map(function (byte) {
+      return ("0" + ((byte + 256) % 256).toString(16)).slice(-2);
+    })
+    .join("");
+}
+
+function icon_(groupClass, taskClass) {
+  const group = text_(groupClass).normalize("NFC").toUpperCase();
+  const type = text_(taskClass).normalize("NFC").toUpperCase();
+  if (type === "SYSTEM" || group.indexOf("SYSTEM") >= 0) return "⚙️";
+  if (group.indexOf("BẢN SẮC") >= 0) return "🎭";
+  if (group.indexOf("ĐẠO ĐỒ") >= 0) return "🧘";
+  if (group.indexOf("SỰ NGHIỆP") >= 0) return "💼";
+  return "";
+}
+
+function calendarColor_(taskClass, gi) {
+  if (gi !== 0) return "MAUVE";
+  const type = text_(taskClass).normalize("NFC").trim().toUpperCase();
+  if (type === "SYSTEM") return "RED";
+  if (["KNOWLEDGES", "CASUAL SKILLS", "NỘI TẠI"].indexOf(type) >= 0) {
+    return "GREEN";
+  }
+  if (["DƯỠNG SINH", "SIÊU SINH", "TRƯỜNG SINH"].indexOf(type) >= 0) {
+    return "YELLOW";
+  }
+  return "";
+}
+
+function eventColor_(colorName) {
+  if (!colorName) return "";
+  const colors = {
+    MAUVE: CalendarApp.EventColor.MAUVE,
+    RED: CalendarApp.EventColor.RED,
+    GREEN: CalendarApp.EventColor.GREEN,
+    YELLOW: CalendarApp.EventColor.YELLOW,
+    GRAY: CalendarApp.EventColor.GRAY,
+  };
+  if (!Object.prototype.hasOwnProperty.call(colors, colorName)) {
+    throw new Error("Màu Calendar chưa được ánh xạ: " + colorName);
+  }
+  return colors[colorName];
+}
+
+function description_(taskId, taskClass, name, content, pr, gi, duration, originalDuration) {
+  let normalizedContent = text_(content);
+  if (normalizedContent.startsWith("[") && normalizedContent.endsWith("]")) {
+    normalizedContent = normalizedContent.slice(1, -1).trim();
+  }
+  if (normalizedContent) normalizedContent = "-> " + normalizedContent;
+  const lines = [
+    "INTERNAL_TASK_ID: " + taskId,
+    "CLASS: " + text_(taskClass),
+    "CÔNG VIỆC: " + name,
+    "NỘI DUNG: " + normalizedContent,
+    "PR: " + formatSourceValue_(pr),
+    "GI: " + String(gi),
+    "DURING: " + String(duration),
+  ];
+  if (duration !== originalDuration) {
+    lines.push("ORIGINAL_DURING: " + String(originalDuration));
+    lines.push(
+      "SCHEDULE_ADJUSTMENT: -" +
+        String(Math.round((originalDuration - duration) * 3600) / 3600) +
+        " hours"
+    );
+  }
+  return lines.join("\n");
+}
+
+function serializeDate_(value, displayValue, timezone) {
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, timezone, "yyyy-MM-dd");
+  }
+  return text_(displayValue || value);
+}
+
+function serializeMasterValue_(value, displayValue, timezone) {
+  if (value === "" || value === null) return text_(displayValue);
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, timezone, "yyyy-MM-dd'T'HH:mm:ss");
+  }
+  return value;
+}
+
+function serializeStartTime_(value, displayValue, timezone) {
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return Utilities.formatDate(value, timezone, "HH:mm");
+  }
+  if (typeof value === "number") return value;
+  return text_(displayValue || value);
+}
+
+function formatSourceValue_(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+}
+
+function formatDate_(date) {
+  return (
+    date.getFullYear() +
+    "-" +
+    twoDigits_(date.getMonth() + 1) +
+    "-" +
+    twoDigits_(date.getDate())
+  );
+}
+
+function formatTime_(date) {
+  const base = twoDigits_(date.getHours()) + ":" + twoDigits_(date.getMinutes());
+  return date.getSeconds() ? base + ":" + twoDigits_(date.getSeconds()) : base;
+}
+
+function twoDigits_(value) {
+  return ("0" + value).slice(-2);
+}
+
+function sameRow_(left, right) {
+  return (
+    left.length === right.length &&
+    left.every(function (value, index) {
+      return String(value) === String(right[index]);
+    })
+  );
+}
+
+function text_(value) {
+  return value === null || value === undefined ? "" : String(value).trim();
+}
+
+function columnToLetter_(column) {
+  let result = "";
+  let value = column;
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    result = String.fromCharCode(65 + remainder) + result;
+    value = Math.floor((value - 1) / 26);
+  }
+  return result;
+}
