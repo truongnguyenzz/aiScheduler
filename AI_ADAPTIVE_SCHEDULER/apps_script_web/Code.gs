@@ -1,5 +1,5 @@
 // Bump this value before each Web App deployment.
-const APP_VERSION = "2026.11.14.8";
+const APP_VERSION = "2026.11.15.1";
 const TEST_SOURCE_SPREADSHEET_ID =
   "1S8ev72pAVVSWEruT7zPziOr954VyiLxPEkFL1sZB01I";
 const DATABASE_SPREADSHEET_ID =
