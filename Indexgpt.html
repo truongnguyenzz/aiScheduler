@@ -55,7 +55,7 @@
       .source-preview-switch { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
       .source-preview-switch button { margin-top: 0; }
       .version-badge { color: #5f6368; font-size: 13px; font-weight: 400; vertical-align: middle; }
-      .hidden { display: none; }
+      .hidden, .settings.hidden { display: none !important; }
       @media (max-width: 600px) {
         body { padding: 12px; }
         .card { padding: 14px; }
@@ -103,6 +103,11 @@
           <label><input id="includeSecondaryTasks" type="checkbox" checked> Secondary tasks</label>
           <button id="confirmPreviewButton" type="button" onclick="previewSource()">Xác nhận và xem trước</button>
         </div>
+        <div id="destinationTabPanel" class="settings hidden" style="margin-top:12px;padding:12px;border:1px solid var(--border-color,#ddd);border-radius:8px;">
+          <label for="destinationTabSelect"><strong>Chọn tab đích trong Scheduler Database</strong></label>
+          <select id="destinationTabSelect" style="width:100%;margin-top:6px;"></select>
+          <div class="muted">Chỉ hiển thị các tab hiện có có cấu trúc phù hợp để ghi dữ liệu Scheduler.</div>
+        </div>
         <button id="writeButton" class="secondary" onclick="writeDatabase()">
           Ghi vào Scheduler Database
         </button>
@@ -117,11 +122,6 @@
         <div class="muted">
           Chuẩn hóa tải JSON đầu vào cho VS Code. Tối ưu và xem preview trong
           extension VS Code. Hỗ trợ Main Tasks và Secondary Tasks theo transfer schema v4.
-        </div>
-        <div id="destinationTabPanel" class="settings hidden" style="margin-top:12px;padding:12px;border:1px solid var(--border-color,#ddd);border-radius:8px;">
-          <label for="destinationTabSelect"><strong>Chọn tab đích trong Scheduler Database</strong></label>
-          <select id="destinationTabSelect" style="width:100%;margin-top:6px;"></select>
-          <div class="muted">Chỉ hiển thị các tab hiện có có cấu trúc phù hợp để ghi dữ liệu Scheduler.</div>
         </div>
         <div id="sourceStatus" class="status"></div>
         <div id="sourcePreview" class="hidden">
@@ -369,15 +369,18 @@
       function loadDestinationTabOptions(preferredTab) {
         const panel = document.getElementById("destinationTabPanel");
         const select = document.getElementById("destinationTabSelect");
+        const writeButton = document.getElementById("writeButton");
         select.innerHTML = "";
+        select.disabled = true;
+        writeButton.disabled = true;
         panel.classList.remove("hidden");
-        setBusy(true);
+        setStatus("sourceStatus", "Đang tải danh sách tab đích…", false);
         google.script.run
           .withSuccessHandler(function (tabs) {
-            setBusy(false);
+            select.innerHTML = "";
             if (!tabs || !tabs.length) {
               panel.classList.add("hidden");
-              document.getElementById("writeButton").disabled = true;
+              writeButton.disabled = true;
               setStatus("sourceStatus",
                 "Không tìm thấy tab phù hợp trong Scheduler Database. Không thể ghi dữ liệu.",
                 true
@@ -390,17 +393,14 @@
               option.textContent = tabName;
               select.appendChild(option);
             });
-            if (tabs.indexOf(preferredTab) >= 0) {
-              select.value = preferredTab;
-            } else {
-              select.selectedIndex = 0;
-            }
-            document.getElementById("writeButton").disabled = false;
+            select.value = tabs.indexOf(preferredTab) >= 0 ? preferredTab : tabs[0];
+            select.disabled = false;
+            writeButton.disabled = false;
+            setStatus("sourceStatus", "Đã tải danh sách tab. Hãy chọn tab đích trước khi ghi.", false);
           })
           .withFailureHandler(function (error) {
-            setBusy(false);
             panel.classList.add("hidden");
-            document.getElementById("writeButton").disabled = true;
+            writeButton.disabled = true;
             showSourceIdError(error);
           })
           .getSchedulerDatabaseTabs();
@@ -417,15 +417,22 @@
 
       function writeDatabase() {
         if (!currentPreview) return;
+        let destinationTab;
+        try {
+          destinationTab = getSelectedDestinationTab();
+        } catch (error) {
+          setStatus("sourceStatus", error.message, true);
+          return;
+        }
         const message =
           "Ghi " + currentPreview.taskCount + " task theo lựa chọn " +
           (currentTaskSelection.includeMain && currentTaskSelection.includeSecondary
             ? "Main + Secondary"
-            : currentTaskSelection.includeMain ? "Main" : "Secondary") + " vào tab '" +
-          getSelectedDestinationTab() + "' của Scheduler Database?";
+            : currentTaskSelection.includeMain ? "Main" : "Secondary") +
+          " vào tab '" + destinationTab + "' của Scheduler Database?";
         if (!window.confirm(message)) return;
         setBusy(true);
-        setStatus("sourceStatus", "Đang ghi snapshot…", false);
+        setStatus("sourceStatus", "Đang ghi snapshot vào tab " + destinationTab + "…", false);
         google.script.run
           .withSuccessHandler(function (result) {
             currentTab = result.destinationTab;
@@ -446,13 +453,16 @@
               false
             );
           })
-          .withFailureHandler(showSourceIdError)
+          .withFailureHandler(function (error) {
+            setBusy(false);
+            showSourceIdError(error);
+          })
           .writeDatabaseSnapshot(
             document.getElementById("sourceId").value,
             currentPreview.fingerprint,
             currentScheduleSettings,
             currentTaskSelection,
-            getSelectedDestinationTab()
+            destinationTab
           );
       }
 
