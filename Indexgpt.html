@@ -749,6 +749,13 @@
         return parts[2] + "/" + parts[1] + "/" + parts[0];
       }
 
+      function formatDecimalDisplay(value) {
+        if (value === null || value === undefined || value === "") return "";
+        const number = Number(value);
+        if (!Number.isFinite(number)) return value;
+        return String(Math.round((number + Number.EPSILON) * 100) / 100);
+      }
+
       function renderSourceRows(
         rows,
         taskModes,
@@ -771,8 +778,8 @@
                   : "Xếp linh động",
             task: (row[3] ? row[3] + " " : "") + row[4],
             duration: taskModes[index] === "flexible_adjusted"
-              ? row[6] + " (gốc " + originalDurations[index] + ")"
-              : row[6],
+              ? formatDecimalDisplay(row[6]) + " (gốc " + formatDecimalDisplay(originalDurations[index]) + ")"
+              : formatDecimalDisplay(row[6]),
             clock: row[7],
             id: row[9],
           };
@@ -783,7 +790,7 @@
             order: row[4],
             mode: "Secondary · " + row[2],
             task: (row[6] ? row[6] + " " : "") + row[7],
-            duration: row[9],
+            duration: formatDecimalDisplay(row[9]),
             clock: row[10],
             id: row[12],
           });
