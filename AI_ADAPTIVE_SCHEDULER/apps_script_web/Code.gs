@@ -142,12 +142,8 @@ function writeDatabaseSnapshot(sourceInput, expectedFingerprint, settingsInput) 
   try {
     const settings = normalizeScheduleSettings_(settingsInput);
     const result = normalizeSourceSpreadsheet_(sourceInput, settings);
-    if (result.schedule_warnings.length) {
-      throw new Error(
-        "Bản xem trước có " + result.schedule_warnings.length +
-          " cảnh báo chồng lấn/không thể xếp hết task. Hãy xem và tải JSON để điều chỉnh; chưa ghi snapshot vào Scheduler Database."
-      );
-    }
+    // Schedule warnings no longer block writing to Scheduler Database.
+    // Warnings remain available in the preview for user awareness.
     const fingerprint = normalizationFingerprint_(result, settings);
     if (!expectedFingerprint || expectedFingerprint !== fingerprint) {
       throw new Error(
