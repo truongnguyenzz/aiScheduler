@@ -643,7 +643,7 @@ function readSecondaryTasks_(source, readyRows) {
           Math.abs(minutes - catalogMinutes) > 0.0001 ||
           !Number.isFinite(catalogHours) ||
           catalogHours <= 0 ||
-          Math.abs(catalogHours * 60 - catalogMinutes) > 0.01
+          Math.abs(roundDecimal2_(catalogHours) * 60 - catalogMinutes) > 0.61
         ) {
           throw new Error(
             "Thời lượng Secondary Task '" + taskName + "' tại " +
@@ -685,8 +685,8 @@ function readSecondaryTasks_(source, readyRows) {
           icon: secondaryIcon_(group, category, taskClass),
           description: entry.description,
           duration_minutes: minutes,
-          duration_hours: minutes / 60,
-          original_duration_hours: minutes / 60,
+          duration_hours: roundDecimal2_(minutes / 60),
+          original_duration_hours: roundDecimal2_(minutes / 60),
           fixed_start: null,
           clock: null,
           suggested_clock: null,
@@ -1123,8 +1123,8 @@ function normalizePayload_(payload, settingsInput, optionsInput) {
           task.duration,
           ""
         ),
-        duration_hours: task.duration,
-        original_duration_hours: task.duration,
+        duration_hours: roundDecimal2_(task.duration),
+        original_duration_hours: roundDecimal2_(task.duration),
         fixed_start: task.fixedStart
           ? twoDigits_(task.fixedStart.hour) +
             ":" +
@@ -1178,8 +1178,8 @@ function normalizePayload_(payload, settingsInput, optionsInput) {
       task_name: "Ngủ đêm",
       icon: "🌙",
       description: "Ngủ đêm hôm nay",
-      duration_hours: settings.sleepDurationHours,
-      original_duration_hours: settings.sleepDurationHours,
+      duration_hours: roundDecimal2_(settings.sleepDurationHours),
+      original_duration_hours: roundDecimal2_(settings.sleepDurationHours),
       fixed_start: settings.sleepStartTime,
       clock: formatClock_(sleepStartSeconds, sleepEndSeconds),
       color: "GRAY",
@@ -1199,7 +1199,7 @@ function normalizePayload_(payload, settingsInput, optionsInput) {
         task.icon,
         task.task_name,
         secondaryDescription_(task, clock),
-        task.duration_hours,
+        roundDecimal2_(task.duration_hours),
         clock,
         task.color,
         id,
@@ -1293,10 +1293,10 @@ function normalizePayload_(payload, settingsInput, optionsInput) {
       twoDigits_(endDate.getMonth() + 1) +
       "/ " +
       endDate.getFullYear(),
-    rows: rows,
-    secondary_rows: secondaryRows,
+    rows: rows.map(function (row) { return row.map(function (value) { return typeof value === "number" ? roundDecimal2_(value) : value; }); }),
+    secondary_rows: secondaryRows.map(function (row) { return row.map(function (value) { return typeof value === "number" ? roundDecimal2_(value) : value; }); }),
     task_modes: taskModes,
-    task_original_durations: taskOriginalDurations,
+    task_original_durations: taskOriginalDurations.map(roundDecimal2_),
     transfer_tasks: transferTasks,
     transfer_secondary_tasks: transferSecondaryTasks,
     schedule_warnings: scheduleWarnings,
@@ -2223,7 +2223,7 @@ function prepareCalendarPlan_(tabNameInput, selectedDatesInput, options) {
         row[6],
         "Database G" + (index + 1) + " (DURING)"
       );
-    if (duration <= 0 || Math.floor(duration * 3600 + 0.5) * 1000 !== end - start) {
+    if (duration <= 0 || Math.abs(Math.round(duration * 3600) * 1000 - (end - start)) > 18000) {
       throw new Error(
         "CLOCK không khớp DURING trong database dòng " + (index + 1) + "."
       );
@@ -2694,35 +2694,36 @@ function validDate_(year, month, day, field) {
   return date;
 }
 
+function roundDecimal2_(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw new Error("Giá trị số không hữu hạn: " + value);
+  return Math.round((number + Number.EPSILON) * 100) / 100;
+}
+
+function formatDecimal2_(value) {
+  if (value === null || value === undefined || value === "") return "";
+  if (typeof value !== "number" && !/^[+-]?\d+(?:[.,]\d+)?$/.test(String(value).trim())) return String(value).trim();
+  return String(roundDecimal2_(String(value).trim().replace(",", ".")));
+}
+
 function parseDecimal_(value, field) {
   if (typeof value === "boolean" || value === null || text_(value) === "") {
     throw new Error(field + " đang trống hoặc không phải số.");
   }
   const normalized = String(value).trim().replace(",", ".");
-  if (!/^[+-]?\d+(?:\.\d{1,2})?$/.test(normalized)) {
-    throw new Error(field + " có giá trị thập phân không hợp lệ: " + value);
+  if (!/^[+-]?\d+(?:\.\d+)?$/.test(normalized)) {
+    throw new Error(field + " có giá trị số không hợp lệ: " + value);
   }
   const result = Number(normalized);
   if (!Number.isFinite(result)) throw new Error(field + " phải là số hữu hạn.");
-  return result;
+  return roundDecimal2_(result);
 }
 
 function parseSecondaryDuration_(value, field) {
-  if (typeof value === "boolean" || value === null || text_(value) === "") {
-    throw new Error(field + " đang trống hoặc không phải số.");
-  }
+  if (typeof value === "boolean" || value === null || text_(value) === "") throw new Error(field + " đang trống hoặc không phải số.");
   const duration = Number(String(value).trim().replace(",", "."));
-  const minutes = duration * 60;
-  if (
-    !Number.isFinite(duration) ||
-    duration <= 0 ||
-    Math.abs(minutes - Math.round(minutes)) > 1e-6
-  ) {
-    throw new Error(
-      field + " phải là thời lượng giờ dương, quy đổi chính xác ra phút."
-    );
-  }
-  return duration;
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error(field + " phải là thời lượng giờ dương.");
+  return roundDecimal2_(duration);
 }
 
 function parseStartTime_(value, field) {
@@ -2915,12 +2916,12 @@ function description_(
     "CÔNG VIỆC: " + name,
     "NỘI DUNG: " + normalizedContent,
     "PR: " + formatSourceValue_(pr),
-    "GI: " + String(gi),
-    "DURING: " + String(duration),
+    "GI: " + formatDecimal2_(gi),
+    "DURING: " + formatDecimal2_(duration),
   ];
   if (clock) lines.push("CLOCK: " + String(clock));
   if (duration !== originalDuration) {
-    lines.push("ORIGINAL_DURING: " + String(originalDuration));
+    lines.push("ORIGINAL_DURING: " + formatDecimal2_(originalDuration));
     lines.push(
       "SCHEDULE_ADJUSTMENT: -" +
         String(Math.round((originalDuration - duration) * 3600) / 3600) +
@@ -2940,8 +2941,8 @@ function secondaryDescription_(task, clock) {
     "NHÓM: " + task.group,
     "CATEGORY: " + task.category,
     "CLASS: " + task.class,
-    "DURING: " + task.duration_hours + " hours (" +
-      task.duration_minutes + " minutes)",
+    "DURING: " + formatDecimal2_(task.duration_hours) + " hours (" +
+      formatDecimal2_(task.duration_minutes) + " minutes)",
     "MÔ TẢ: " + text_(task.description),
   ];
   if (clock) lines.push("CLOCK: " + String(clock));
@@ -2973,6 +2974,7 @@ function serializeStartTime_(value, displayValue, timezone) {
 
 function formatSourceValue_(value) {
   if (value === null || value === undefined) return "";
+  if (typeof value === "number") return formatDecimal2_(value);
   return String(value).trim();
 }
 
