@@ -1,0 +1,43 @@
+{
+  "name": "ai-adaptive-scheduler",
+  "displayName": "AI Adaptive Scheduler",
+  "description": "Preview, validate, and write approved Main and Secondary tasks to Scheduler Database.",
+  "version": "0.4.0",
+  "publisher": "ai-adaptive-scheduler",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onCommand:scheduler.openWeeklyPreview",
+    "onCommand:scheduler.importApprovedSchedule"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "AI Adaptive Scheduler",
+      "properties": {
+        "scheduler.optimizerPythonPath": {
+          "type": "string",
+          "default": "",
+          "description": "Python executable for the local OR-Tools optimizer. Leave blank to use the workspace .venv, then python from PATH."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "scheduler.openWeeklyPreview",
+        "title": "Scheduler: Open Weekly Preview"
+      },
+      {
+        "command": "scheduler.importApprovedSchedule",
+        "title": "Scheduler: Import Approved Schedule to Database"
+      }
+    ]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

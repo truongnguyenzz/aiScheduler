@@ -1,0 +1,183 @@
+:root {
+  color-scheme: light dark;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+
+body {
+  margin: 0;
+  padding: 18px;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+p {
+  line-height: 1.5;
+}
+
+#fileInfo,
+.hint {
+  color: var(--vscode-descriptionForeground);
+  overflow-wrap: anywhere;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0;
+}
+
+button {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 3px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.primary {
+  font-weight: 600;
+}
+
+.status {
+  padding: 10px;
+  border-left: 3px solid var(--vscode-focusBorder);
+  background: var(--vscode-editor-inactiveSelectionBackground);
+  white-space: pre-wrap;
+}
+
+.calendar-scroll {
+  margin-top: 16px;
+  overflow: auto;
+  border: 1px solid var(--vscode-panel-border);
+}
+
+.day-header,
+.week-grid {
+  display: grid;
+  grid-template-columns: 58px repeat(var(--day-count), minmax(150px, 1fr));
+  min-width: calc(58px + var(--day-count) * 150px);
+}
+
+.day-header {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: var(--vscode-sideBar-background);
+}
+
+.corner,
+.day-label {
+  box-sizing: border-box;
+  min-height: 48px;
+  padding: 6px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.corner {
+  position: sticky;
+  left: 0;
+  z-index: 5;
+}
+
+.day-label {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  border-left: 1px solid var(--vscode-panel-border);
+  font-size: 12px;
+}
+
+.day-label span {
+  color: var(--vscode-descriptionForeground);
+}
+
+.hour-column,
+.day-column {
+  position: relative;
+  height: calc(24 * var(--hour-height));
+}
+
+.hour-column {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--vscode-editor-background);
+}
+
+.hour-label {
+  box-sizing: border-box;
+  height: var(--hour-height);
+  padding: 0 5px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  text-align: right;
+  transform: translateY(-6px);
+}
+
+.day-column {
+  border-left: 1px solid var(--vscode-panel-border);
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--hour-height) - 1px),
+    var(--vscode-panel-border) calc(var(--hour-height) - 1px),
+    var(--vscode-panel-border) var(--hour-height)
+  );
+}
+
+.task {
+  position: absolute;
+  right: 2px;
+  left: 2px;
+  z-index: 1;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 3px 4px;
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
+  border-radius: 4px;
+  color: #202124;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.task strong,
+.task span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task span {
+  margin-top: 2px;
+  opacity: 0.85;
+  font-size: 10px;
+}
+
+.task.sleep {
+  color: #202124;
+}
+
+.hint {
+  margin-top: 12px;
+}
+
+.empty {
+  padding: 12px;
+}

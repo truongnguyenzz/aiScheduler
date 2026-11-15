@@ -1,0 +1,1025 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      :root { color-scheme: light; font-family: Arial, sans-serif; }
+      body { margin: 0; padding: 24px; color: #202124; background: #f7f8fa; }
+      main { max-width: 1000px; margin: auto; }
+      h1 { margin-top: 0; font-size: 24px; }
+      h2 { font-size: 18px; margin: 0 0 12px; }
+      .card { background: white; border: 1px solid #dadce0; border-radius: 10px; padding: 18px; margin: 16px 0; }
+      label { display: block; font-weight: 600; margin-bottom: 8px; }
+      input, select { box-sizing: border-box; width: 100%; padding: 10px; border: 1px solid #bdc1c6; border-radius: 6px; }
+      .settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+      .settings.sleep { margin-top: 10px; }
+      .settings label { font-size: 13px; }
+      .settings input { display: block; margin-top: 6px; }
+      button { margin: 12px 8px 0 0; padding: 10px 14px; border: 0; border-radius: 6px; color: white; background: #1a73e8; cursor: pointer; }
+      button.secondary { background: #5f6368; }
+      button:disabled { background: #aeb4bb; cursor: wait; }
+      .muted { color: #5f6368; font-size: 13px; line-height: 1.5; }
+      .status { white-space: pre-wrap; margin-top: 12px; }
+      .error { color: #b3261e; }
+      .success { color: #137333; }
+      .warning { color: #8a5700; }
+      .table-wrap { overflow-x: auto; margin-top: 14px; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { padding: 8px; text-align: left; border-bottom: 1px solid #e8eaed; }
+      th { background: #f1f3f4; white-space: nowrap; }
+      .calendar-preview { max-height: 70vh; overflow: auto; margin-top: 14px; border: 1px solid #dadce0; border-radius: 8px; }
+      .calendar-grid { --hour-height: 48px; display: grid; grid-template-columns: 58px repeat(var(--day-count), minmax(145px, 1fr)); min-width: calc(58px + var(--day-count) * 145px); }
+      .calendar-corner, .calendar-day-header { position: sticky; top: 0; z-index: 3; box-sizing: border-box; height: 44px; padding: 6px; background: #f8f9fa; border-bottom: 1px solid #dadce0; }
+      .calendar-corner { left: 0; z-index: 4; }
+      .calendar-day-header { text-align: center; border-left: 1px solid #dadce0; font-size: 12px; }
+      .calendar-hours { position: sticky; left: 0; z-index: 2; height: calc(24 * var(--hour-height)); background: white; }
+      .calendar-hour { box-sizing: border-box; height: var(--hour-height); padding: 0 6px; color: #5f6368; font-size: 11px; text-align: right; transform: translateY(-7px); }
+      .calendar-day { position: relative; height: calc(24 * var(--hour-height)); border-left: 1px solid #dadce0; background: repeating-linear-gradient(to bottom, transparent 0, transparent calc(var(--hour-height) - 1px), #e8eaed calc(var(--hour-height) - 1px), #e8eaed var(--hour-height)); }
+      .calendar-event { position: absolute; box-sizing: border-box; overflow: hidden; padding: 3px 4px; border: 1px solid rgba(32, 33, 36, .18); border-radius: 4px; color: #202124; font-size: 11px; line-height: 1.25; }
+      .calendar-event strong, .calendar-event span { display: block; overflow: hidden; text-overflow: ellipsis; }
+      .calendar-event span { opacity: .8; font-size: 10px; }
+      .calendar-note { margin: 12px; }
+      .sync-panel { margin-top: 16px; padding: 16px; border: 1px solid #dadce0; border-radius: 10px; background: #fff; }
+      .sync-panel h3 { margin: 0 0 12px; font-size: 15px; }
+      .sync-option { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0; font-weight: 400; }
+      .sync-option input, .sync-day input, #selectAllSyncDays { width: auto; margin: 2px 0 0; }
+      .sync-days { display: grid; gap: 7px; margin: 10px 0 16px; }
+      .sync-day { display: flex; align-items: center; gap: 9px; margin: 0; padding: 10px; border: 1px solid #e8eaed; border-radius: 8px; font-weight: 400; }
+      .sync-day span { flex: 1; }
+      .sync-day small { color: #5f6368; }
+      .sync-review { margin-top: 12px; }
+      .sync-review table { margin-top: 10px; }
+      .transfer-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+      .transfer-controls button { margin-right: 0; }
+      .source-preview-switch { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+      .source-preview-switch button { margin-top: 0; }
+      .version-badge { color: #5f6368; font-size: 13px; font-weight: 400; vertical-align: middle; }
+      .hidden { display: none; }
+      @media (max-width: 600px) {
+        body { padding: 12px; }
+        .card { padding: 14px; }
+        .settings { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Scheduler Control <span class="version-badge">v<?= appVersion ?></span></h1>
+      <p class="muted">
+        Luồng test: Sheet edit → Scheduler Database → Google Calendar test.
+        Sheet nguồn chỉ được đọc; thao tác ghi và import đều cần xác nhận.
+      </p>
+
+      <section class="card">
+        <h2>1. Sheet edit theo tuần</h2>
+        <label for="sourceId">Spreadsheet ID hoặc URL</label>
+        <input id="sourceId" autocomplete="off">
+        <div class="settings">
+          <label for="defaultStartTime">
+            Giờ bắt đầu mặc định cho task linh động
+            <input id="defaultStartTime" type="time">
+          </label>
+          <label for="breakMinutes">
+            Khoảng nghỉ giữa các task (phút)
+            <input id="breakMinutes" type="number" min="0" max="180" step="1">
+          </label>
+        </div>
+        <div class="settings sleep">
+          <label for="sleepStartTime">
+            Giờ bắt đầu Ngủ đêm mỗi ngày
+            <input id="sleepStartTime" type="time">
+          </label>
+          <label for="sleepDurationHours">
+            Thời lượng Ngủ đêm (giờ)
+            <input id="sleepDurationHours" type="number" min="0.01" max="24" step="0.01">
+          </label>
+        </div>
+        <div class="muted" id="databaseInfo"></div>
+        <button id="previewButton" onclick="previewSource()">Đọc và xem trước</button>
+        <button id="writeButton" class="secondary" disabled onclick="writeDatabase()">
+          Ghi vào Scheduler Database
+        </button>
+        <div class="transfer-controls">
+          <button id="normalizeButton" class="secondary" onclick="prepareTransferData()">
+            Chuẩn hóa dữ liệu
+          </button>
+          <button id="downloadButton" class="secondary hidden" disabled onclick="downloadTransferData()">
+            Tải về JSON
+          </button>
+        </div>
+        <div class="muted">
+          Chuẩn hóa tải JSON đầu vào cho VS Code. Tối ưu và xem preview trong
+          extension VS Code. Hỗ trợ Main Tasks và Secondary Tasks theo transfer schema v4.
+        </div>
+        <div id="sourceStatus" class="status"></div>
+        <div id="sourcePreview" class="hidden">
+          <div class="source-preview-switch">
+            <button id="sourceViewSwitch" class="secondary" type="button" onclick="toggleSourceView()">
+              Switch
+            </button>
+            <span id="sourceViewLabel" class="muted">Chế độ hiện tại: Lịch tuần</span>
+          </div>
+          <div id="sourceTable" class="table-wrap"></div>
+          <div id="sourceCalendar" class="calendar-preview hidden"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>2. Google Calendar test</h2>
+        <div class="muted" id="calendarInfo"></div>
+        <label for="databaseTabSelect">Tuần trong Scheduler Database</label>
+        <select id="databaseTabSelect"></select>
+        <button id="loadDatabaseTabButton" class="secondary" onclick="selectDatabaseTab()" disabled>
+          Dùng tab đã chọn
+        </button>
+        <div class="muted">
+          Có thể chọn tab được ghi từ VS Code; bước này chỉ đọc Database và không ghi Sheet hay Calendar.
+        </div>
+        <button id="calendarPreviewButton" disabled onclick="previewCalendar()">
+          Xem trước import Calendar
+        </button>
+        <button id="importButton" class="secondary" disabled onclick="importCalendar()">
+          Import vào Calendar test
+        </button>
+        <div id="calendarStatus" class="status"></div>
+        <div id="syncPanel" class="sync-panel hidden">
+          <h3>📅 CHỌN NGÀY ĐỒNG BỘ</h3>
+          <label class="sync-option">
+            <input id="selectAllSyncDays" type="checkbox" checked>
+            <span>CHỌN TẤT CẢ</span>
+          </label>
+          <div id="syncDays" class="sync-days"></div>
+          <h3>⚙️ TÙY CHỌN ĐỒNG BỘ</h3>
+          <label class="sync-option">
+            <input id="deleteManaged" type="checkbox">
+            <span>Xóa toàn bộ lịch Smart Calendar (task + ngủ đêm) trong các ngày đã chọn</span>
+          </label>
+          <label class="sync-option">
+            <input id="createUpdate" type="checkbox" checked>
+            <span>Tạo / cập nhật lịch mới cho các ngày đã chọn</span>
+          </label>
+          <p class="muted">
+            Hệ thống chỉ xóa event do Scheduler quản lý trong các ngày nguồn đã chọn.
+            Event cá nhân và event không có dấu quản lý sẽ không bị xóa. Trước khi đồng bộ,
+            ứng dụng quét Calendar thật để đối chiếu.
+          </p>
+          <button id="syncActionButton" onclick="scanCalendarForSync()">BẮT ĐẦU ĐỒNG BỘ V3.1</button>
+          <button id="syncCancelButton" class="secondary" onclick="closeSyncPanel()">Đóng</button>
+          <div id="syncReview" class="sync-review hidden"></div>
+        </div>
+        <div id="calendarTable" class="calendar-preview hidden"></div>
+      </section>
+    </main>
+
+    <script>
+      let currentPreview = null;
+      let currentTab = "";
+      let currentScheduleSettings = null;
+      let currentSyncPreview = null;
+      let databaseWritten = false;
+      let transferPackage = null;
+
+      function setBusy(busy) {
+        ["previewButton", "writeButton", "normalizeButton", "downloadButton", "sourceViewSwitch", "loadDatabaseTabButton", "calendarPreviewButton", "importButton", "syncActionButton", "syncCancelButton"]
+          .forEach(function (id) {
+            const element = document.getElementById(id);
+            if (!element) return;
+            element.disabled = busy ||
+              (id === "writeButton" &&
+                (!currentPreview || (currentPreview.scheduleWarnings || []).length > 0)) ||
+              (id === "downloadButton" && !transferPackage) ||
+              (id === "loadDatabaseTabButton" &&
+                !document.getElementById("databaseTabSelect").options.length) ||
+              (id === "calendarPreviewButton" && !currentTab) ||
+              (id === "importButton" && !databaseWritten) ||
+              (id === "syncActionButton" && !databaseWritten);
+          });
+      }
+
+      function setStatus(id, message, isError, isWarning) {
+        const element = document.getElementById(id);
+        element.textContent = message || "";
+        element.className = "status" +
+          (isError ? " error" : isWarning ? " warning" : " success");
+      }
+
+      function showSourceIdError(error) {
+        setBusy(false);
+        setStatus("sourceStatus", error.message || String(error), true);
+      }
+
+      function loadDatabaseTabs(preferredTab) {
+        google.script.run
+          .withSuccessHandler(function (tabs) {
+            const select = document.getElementById("databaseTabSelect");
+            select.innerHTML = tabs.map(function (tab) {
+              return '<option value="' + escapeHtml(tab.tabName) + '">' +
+                escapeHtml(tab.tabName) + " · " +
+                escapeHtml(tab.taskCount) + " task / " +
+                escapeHtml(tab.dayCount) + " ngày</option>";
+            }).join("");
+            const preferred = tabs.find(function (tab) {
+              return tab.tabName === preferredTab;
+            });
+            if (preferred) {
+              select.value = preferred.tabName;
+            } else if (tabs.length) {
+              select.value = tabs[0].tabName;
+            }
+            document.getElementById("loadDatabaseTabButton").disabled =
+              tabs.length === 0;
+            if (tabs.length) {
+              selectDatabaseTab();
+            } else {
+              currentTab = "";
+              databaseWritten = false;
+              document.getElementById("calendarPreviewButton").disabled = true;
+              document.getElementById("importButton").disabled = true;
+              setStatus(
+                "calendarStatus",
+                "Chưa có tab tuần hợp lệ trong Scheduler Database.",
+                false
+              );
+            }
+          })
+          .withFailureHandler(function (error) {
+            setStatus("calendarStatus", error.message || String(error), true);
+          })
+          .getCalendarDatabaseTabs();
+      }
+
+      function selectDatabaseTab() {
+        const selected = document.getElementById("databaseTabSelect").value;
+        if (!selected) return;
+        currentTab = selected;
+        databaseWritten = true;
+        currentSyncPreview = null;
+        document.getElementById("calendarPreviewButton").disabled = false;
+        document.getElementById("importButton").disabled = false;
+        document.getElementById("calendarTable").classList.add("hidden");
+        document.getElementById("syncPanel").classList.add("hidden");
+        setStatus(
+          "calendarStatus",
+          "Đã chọn tab " + currentTab + ". Hãy xem trước Calendar trước khi đồng bộ.",
+          false
+        );
+      }
+
+      function readScheduleSettings() {
+        return {
+          defaultStartTime: document.getElementById("defaultStartTime").value,
+          breakMinutes: document.getElementById("breakMinutes").value,
+          sleepStartTime: document.getElementById("sleepStartTime").value,
+          sleepDurationHours: document.getElementById("sleepDurationHours").value,
+        };
+      }
+
+      function invalidatePreview() {
+        currentPreview = null;
+        currentTab = "";
+        databaseWritten = false;
+        currentScheduleSettings = null;
+        currentSyncPreview = null;
+        transferPackage = null;
+        document.getElementById("downloadButton").classList.add("hidden");
+        document.getElementById("writeButton").disabled = true;
+        document.getElementById("calendarPreviewButton").disabled = true;
+        document.getElementById("importButton").disabled = true;
+        document.getElementById("sourcePreview").classList.add("hidden");
+        document.getElementById("calendarTable").classList.add("hidden");
+        document.getElementById("syncPanel").classList.add("hidden");
+        setStatus("sourceStatus", "Cấu hình đã đổi. Hãy xem trước lại trước khi ghi.", false);
+      }
+
+      function previewSource() {
+        currentPreview = null;
+        currentTab = "";
+        databaseWritten = false;
+        currentSyncPreview = null;
+        document.getElementById("syncPanel").classList.add("hidden");
+        document.getElementById("sourcePreview").classList.add("hidden");
+        document.getElementById("calendarTable").classList.add("hidden");
+        setBusy(true);
+        setStatus("sourceStatus", "Đang đọc và chuẩn hóa dữ liệu…", false);
+        const settings = readScheduleSettings();
+        google.script.run
+          .withSuccessHandler(function (result) {
+            currentPreview = result;
+            currentTab = result.destinationTab;
+            currentScheduleSettings = settings;
+            setBusy(false);
+            document.getElementById("writeButton").disabled =
+              (result.scheduleWarnings || []).length > 0;
+            document.getElementById("calendarPreviewButton").disabled = true;
+            setStatus(
+              "sourceStatus",
+              "Nguồn: " + result.sourceTitle +
+                "\nTab database dự kiến: " + result.destinationTab +
+                "\nTổng số task: " + result.taskCount +
+                "\nMain Tasks: " + result.mainTaskCount +
+                "\nSecondary Tasks: " + result.secondaryTaskCount +
+                "\nTask được xếp linh động: " + result.flexibleTaskCount +
+                "\nTask giảm duration trong giới hạn: " + result.reducedTaskCount +
+                "\nTask Ngủ đêm tự tạo: " + result.sleepTaskCount +
+                "\nGiờ bắt đầu mặc định: " + result.scheduleSettings.defaultStartTime +
+                "\nKhoảng nghỉ: " + result.scheduleSettings.breakMinutes + " phút" +
+                "\nNgủ đêm: " + result.scheduleSettings.sleepStartTime +
+                " · " + result.scheduleSettings.sleepDurationHours + " giờ" +
+                "\nTask có CLOCK trống: " + result.unassignedClockCount +
+                ((result.scheduleWarnings || []).length
+                  ? "\n\nCảnh báo xem trước (" +
+                    result.scheduleWarnings.length + "):\n• " +
+                    result.scheduleWarnings.join("\n• ") +
+                    "\nCác khối chồng lấn vẫn được hiển thị. Ghi vào Database tạm khóa; hãy tải JSON để tiếp tục chỉnh lịch."
+                  : ""),
+              false,
+              (result.scheduleWarnings || []).length > 0
+            );
+            renderSourceRows(
+              result.rows,
+              result.taskModes,
+              result.taskOriginalDurations,
+              result.secondaryRows,
+              result.previewItems
+            );
+          })
+          .withFailureHandler(showSourceIdError)
+          .previewNormalization(
+            document.getElementById("sourceId").value,
+            settings
+          );
+      }
+
+      function writeDatabase() {
+        if (!currentPreview) return;
+        const message =
+          "Ghi " + currentPreview.taskCount + " task (bao gồm " +
+          currentPreview.secondaryTaskCount + " Secondary Tasks và " +
+          currentPreview.sleepTaskCount + " task Ngủ đêm) vào tab '" +
+          currentPreview.destinationTab + "' của Scheduler Database?";
+        if (!window.confirm(message)) return;
+        setBusy(true);
+        setStatus("sourceStatus", "Đang ghi snapshot…", false);
+        google.script.run
+          .withSuccessHandler(function (result) {
+            currentTab = result.destinationTab;
+            databaseWritten = true;
+            currentSyncPreview = null;
+            setBusy(false);
+            document.getElementById("calendarPreviewButton").disabled = false;
+            document.getElementById("importButton").disabled = false;
+            loadDatabaseTabs(result.destinationTab);
+            setStatus(
+              "sourceStatus",
+              "Đã ghi " + result.taskCount + " task vào " +
+                result.destinationTab +
+                ". Secondary Tasks: " + result.secondaryTaskCount +
+                ". Task linh động: " + result.flexibleTaskCount +
+                ", giảm duration: " + result.reducedTaskCount +
+                ". Task Ngủ đêm: " + result.sleepTaskCount + ".",
+              false
+            );
+          })
+          .withFailureHandler(showSourceIdError)
+          .writeDatabaseSnapshot(
+            document.getElementById("sourceId").value,
+            currentPreview.fingerprint,
+            currentScheduleSettings
+          );
+      }
+
+      function prepareTransferData() {
+        transferPackage = null;
+        document.getElementById("downloadButton").classList.add("hidden");
+        setBusy(true);
+        setStatus("sourceStatus", "Đang chuẩn hóa dữ liệu nguồn để xuất JSON…", false);
+        google.script.run
+          .withSuccessHandler(function (result) {
+            transferPackage = result;
+            setBusy(false);
+            document.getElementById("downloadButton").classList.remove("hidden");
+            setStatus(
+              "sourceStatus",
+              "Đã chuẩn hóa " + result.tasks.length + " Main Tasks và " +
+                (result.secondary_tasks || []).length +
+                " Secondary Tasks cho tab " + result.source.destination_tab +
+                ". Task linh động chưa có CLOCK; task phụ giữ duration gốc. Chọn Tải về JSON để chuyển sang VS Code." +
+                ((result.scheduling_warnings || []).length
+                  ? "\n\nCó " + result.scheduling_warnings.length +
+                    " cảnh báo về xung đột vị trí. JSON vẫn sẵn sàng tải; các CLOCK gợi ý có thể chồng lấn."
+                  : ""),
+              false,
+              (result.scheduling_warnings || []).length > 0
+            );
+          })
+          .withFailureHandler(function (error) {
+            setBusy(false);
+            setStatus("sourceStatus", error.message || String(error), true);
+          })
+          .exportNormalizationData(
+            document.getElementById("sourceId").value,
+            readScheduleSettings()
+          );
+      }
+
+      function downloadTransferData() {
+        if (!transferPackage) return;
+        downloadJson(
+          transferPackage,
+          "scheduler-input-" + transferPackage.source.week_start + ".json"
+        );
+      }
+
+      function downloadJson(value, filename) {
+        const blob = new Blob(
+          [JSON.stringify(value, null, 2)],
+          { type: "application/json;charset=utf-8" }
+        );
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      }
+
+      function previewCalendar() {
+        if (!currentTab) return;
+        setBusy(true);
+        setStatus("calendarStatus", "Đang kiểm tra Calendar test…", false);
+        document.getElementById("calendarTable").classList.add("hidden");
+        google.script.run
+          .withSuccessHandler(function (result) {
+            setBusy(false);
+            document.getElementById("importButton").disabled = false;
+            setStatus(
+              "calendarStatus",
+              "Tab: " + result.destinationTab +
+                "\nCalendar: " + result.calendarTitle +
+                "\nTạo mới: " + result.createCount +
+                " · Cập nhật: " + result.updateCount +
+                " · Đã đúng: " + result.unchangedCount +
+                " · Tổng task theo thứ tự nguồn: " + result.items.length +
+                "\nBlock chồng giờ được hiển thị cạnh nhau trong mô phỏng.",
+              false
+            );
+            renderCalendarRows(result.items);
+          })
+          .withFailureHandler(function (error) {
+            setBusy(false);
+            setStatus("calendarStatus", error.message || String(error), true);
+          })
+          .previewCalendarImport(currentTab);
+      }
+
+      function importCalendar() {
+        if (!currentTab || !databaseWritten) return;
+        currentSyncPreview = null;
+        document.getElementById("syncReview").innerHTML = "";
+        document.getElementById("syncReview").classList.add("hidden");
+        document.getElementById("syncDays").innerHTML = "";
+        document.getElementById("syncPanel").classList.remove("hidden");
+        document.getElementById("syncActionButton").textContent =
+          "ĐANG ĐỌC CÁC NGÀY TRONG DATABASE…";
+        setBusy(true);
+        google.script.run
+          .withSuccessHandler(function (days) {
+            renderSyncDays(days);
+            setBusy(false);
+            document.getElementById("syncActionButton").textContent =
+              "BẮT ĐẦU ĐỒNG BỘ V3.1";
+          })
+          .withFailureHandler(function (error) {
+            setBusy(false);
+            setStatus("calendarStatus", error.message || String(error), true);
+          })
+          .getCalendarSyncDays(currentTab);
+      }
+
+      function renderSyncDays(days) {
+        const container = document.getElementById("syncDays");
+        container.innerHTML = days.map(function (day) {
+          return '<label class="sync-day"><input type="checkbox" name="syncDate" value="' +
+            escapeHtml(day.date) + '" checked><span>' +
+            escapeHtml(day.weekday) + '</span><small>' +
+            escapeHtml(formatDisplayDate(day.date)) + " · " +
+            escapeHtml(day.taskCount) + " task</small></label>";
+        }).join("");
+        container.querySelectorAll('input[name="syncDate"]').forEach(function (input) {
+          input.addEventListener("change", function () {
+            const allInputs = Array.from(
+              document.querySelectorAll('input[name="syncDate"]')
+            );
+            document.getElementById("selectAllSyncDays").checked =
+              allInputs.length > 0 && allInputs.every(function (dayInput) {
+                return dayInput.checked;
+              });
+            invalidateSyncPreview();
+          });
+        });
+        document.getElementById("selectAllSyncDays").checked = true;
+      }
+
+      function selectedSyncDates() {
+        return Array.from(
+          document.querySelectorAll('input[name="syncDate"]:checked')
+        ).map(function (input) {
+          return input.value;
+        });
+      }
+
+      function selectedSyncOptions() {
+        return {
+          deleteManaged: document.getElementById("deleteManaged").checked,
+          createUpdate: document.getElementById("createUpdate").checked,
+        };
+      }
+
+      function invalidateSyncPreview() {
+        currentSyncPreview = null;
+        document.getElementById("syncReview").innerHTML = "";
+        document.getElementById("syncReview").classList.add("hidden");
+        document.getElementById("syncActionButton").textContent =
+          "QUÉT CALENDAR VÀ XEM ĐỐI CHIẾU";
+      }
+
+      function closeSyncPanel() {
+        currentSyncPreview = null;
+        document.getElementById("syncPanel").classList.add("hidden");
+      }
+
+      function scanCalendarForSync() {
+        if (currentSyncPreview) {
+          applyCalendarSync();
+          return;
+        }
+        const dates = selectedSyncDates();
+        const options = selectedSyncOptions();
+        if (!dates.length) {
+          setStatus("calendarStatus", "Hãy chọn ít nhất một ngày.", true);
+          return;
+        }
+        if (!options.deleteManaged && !options.createUpdate) {
+          setStatus("calendarStatus", "Hãy chọn xóa lịch hoặc tạo/cập nhật lịch.", true);
+          return;
+        }
+        setBusy(true);
+        setStatus("calendarStatus", "Đang quét dữ liệu Calendar thật để đối chiếu…", false);
+        google.script.run
+          .withSuccessHandler(function (result) {
+            setBusy(false);
+            currentSyncPreview = result;
+            renderSyncReview(result);
+            document.getElementById("syncActionButton").textContent =
+              "XÁC NHẬN VÀ ĐỒNG BỘ";
+            setStatus("calendarStatus", "Đã quét Calendar. Kiểm tra đối chiếu rồi xác nhận đồng bộ.", false);
+          })
+          .withFailureHandler(function (error) {
+            setBusy(false);
+            setStatus("calendarStatus", error.message || String(error), true);
+          })
+          .previewCalendarImport(currentTab, dates, options);
+      }
+
+      function applyCalendarSync() {
+        const preview = currentSyncPreview;
+        if (!preview) return;
+        const actionSummary = [
+          preview.options.deleteManaged
+            ? "Xóa " + preview.deleteCount + " event do ứng dụng quản lý"
+            : "",
+          preview.options.createUpdate
+            ? "Tạo " + preview.createCount + ", cập nhật " +
+              preview.updateCount + ", giữ nguyên " + preview.unchangedCount
+            : "",
+        ].filter(Boolean).join("; ");
+        const message =
+          "Thực hiện đồng bộ " + preview.selectedDates.length +
+          " ngày (" + preview.selectedDates.map(function (day) {
+            return day.weekday + " " + formatDisplayDate(day.date);
+          }).join(", ") + ")?\n" + actionSummary +
+          ". Event cá nhân không bị xóa.";
+        if (!window.confirm(message)) return;
+        setBusy(true);
+        setStatus("calendarStatus", "Đang áp dụng đồng bộ và xác minh Calendar…", false);
+        google.script.run
+          .withSuccessHandler(function (result) {
+            setBusy(false);
+            currentSyncPreview = null;
+            document.getElementById("syncReview").classList.add("hidden");
+            document.getElementById("syncActionButton").textContent =
+              "QUÉT CALENDAR VÀ XEM ĐỐI CHIẾU";
+            setStatus(
+              "calendarStatus",
+              "Hoàn tất: " + result.counts.deleted + " xóa, " +
+                result.counts.created + " tạo mới, " +
+                result.counts.updated + " cập nhật, " +
+                result.counts.unchanged + " giữ nguyên.",
+              false
+            );
+          })
+          .withFailureHandler(function (error) {
+            setBusy(false);
+            currentSyncPreview = null;
+            document.getElementById("syncActionButton").textContent =
+              "QUÉT CALENDAR VÀ XEM ĐỐI CHIẾU";
+            setStatus("calendarStatus", error.message || String(error), true);
+          })
+          .importCalendarEvents(
+            currentTab,
+            preview.fingerprint,
+            selectedSyncDates(),
+            selectedSyncOptions()
+          );
+      }
+
+      function renderSyncReview(result) {
+        const review = document.getElementById("syncReview");
+        const taskRows = result.items.map(function (item) {
+          return [
+            item.weekday + " " + formatDisplayDate(item.date),
+            item.title,
+            item.startTime + "–" + item.endTime +
+              (item.startDate !== item.endDate ? " · " + formatDisplayDate(item.endDate) : ""),
+            item.status,
+          ];
+        });
+        const existingRows = result.calendarEvents.map(function (event) {
+          return [
+            event.title,
+            formatDisplayDate(event.startDate) + " " + event.startTime +
+              "–" + formatDisplayDate(event.endDate) + " " + event.endTime,
+            event.managed ? "Scheduler" : "Calendar khác",
+            event.deletable ? "Sẽ xóa" : "Giữ nguyên",
+          ];
+        });
+        const sections = [];
+        sections.push("<p><strong>Calendar hiện có:</strong> " +
+          result.calendarEvents.length + " event trong ngày đã chọn; " +
+          result.deleteCount + " event Scheduler có thể xóa.</p>");
+        if (result.options.createUpdate) {
+          sections.push("<h4>Dữ liệu từ Scheduler Database → Calendar</h4>" +
+            makeTable(["Ngày", "Task", "Giờ", "Hành động"], taskRows));
+        }
+        sections.push("<h4>Event thực tế đang có trên Calendar</h4>" +
+          (existingRows.length
+            ? makeTable(["Event", "Thời gian", "Nguồn", "Xử lý"], existingRows)
+            : '<p class="muted">Không có event trong Calendar ở các ngày đã chọn.</p>'));
+        review.innerHTML =
+          "<p>Tạo mới: " + result.createCount +
+          " · Cập nhật: " + result.updateCount +
+          " · Đã đúng: " + result.unchangedCount +
+          " · Sẽ xóa: " + result.deleteCount + "</p>" +
+          sections.join("");
+        review.classList.remove("hidden");
+      }
+
+      function formatDisplayDate(value) {
+        const parts = value.split("-");
+        return parts[2] + "/" + parts[1] + "/" + parts[0];
+      }
+
+      function renderSourceRows(
+        rows,
+        taskModes,
+        originalDurations,
+        secondaryRows,
+        previewItems
+      ) {
+        const table = document.getElementById("sourceTable");
+        table.innerHTML = "";
+        const visible = rows.map(function (row, index) {
+          return {
+            date: row[0],
+            order: row[2],
+            mode: taskModes[index] === "fixed"
+              ? "Giờ cố định"
+              : taskModes[index] === "sleep"
+                ? "Ngủ đêm"
+                : taskModes[index] === "flexible_adjusted"
+                  ? "Linh động · giảm thời lượng"
+                  : "Xếp linh động",
+            task: (row[3] ? row[3] + " " : "") + row[4],
+            duration: taskModes[index] === "flexible_adjusted"
+              ? row[6] + " (gốc " + originalDurations[index] + ")"
+              : row[6],
+            clock: row[7],
+            id: row[9],
+          };
+        });
+        (secondaryRows || []).forEach(function (row) {
+          visible.push({
+            date: row[0],
+            order: row[4],
+            mode: "Secondary · " + row[2],
+            task: (row[6] ? row[6] + " " : "") + row[7],
+            duration: row[9],
+            clock: row[10],
+            id: row[12],
+          });
+        });
+        visible.sort(function (left, right) {
+          return left.date.localeCompare(right.date) ||
+            String(left.clock).localeCompare(String(right.clock));
+        });
+        table.innerHTML = makeTable(
+          ["Ngày", "Thứ tự", "Loại giờ", "Công việc", "During (giờ)", "Clock", "ID task"],
+          visible.map(function (row) {
+            return [row.date, row.order, row.mode, row.task, row.duration, row.clock, row.id];
+          })
+        );
+        renderCalendarRows(
+          (previewItems || []).map(function (item) {
+            return {
+              date: item.date,
+              sourceOrder: item.sourceOrder,
+              title: item.title,
+              description: item.description,
+              durationHours: item.durationHours,
+              startDate: item.startDate,
+              startTime: item.startTime,
+              endDate: item.endDate,
+              endTime: item.endTime,
+              colorName: item.colorName,
+              status: "preview",
+            };
+          }),
+          "sourceCalendar"
+        );
+        document.getElementById("sourcePreview").classList.remove("hidden");
+        table.classList.add("hidden");
+        document.getElementById("sourceCalendar").classList.remove("hidden");
+        document.getElementById("sourceViewLabel").textContent =
+          "Chế độ hiện tại: Lịch tuần";
+      }
+
+      function toggleSourceView() {
+        const table = document.getElementById("sourceTable");
+        const calendar = document.getElementById("sourceCalendar");
+        const showCalendar = calendar.classList.contains("hidden");
+        table.classList.toggle("hidden", showCalendar);
+        calendar.classList.toggle("hidden", !showCalendar);
+        document.getElementById("sourceViewLabel").textContent =
+          "Chế độ hiện tại: " + (showCalendar ? "Lịch tuần" : "Bảng dữ liệu");
+      }
+
+      function parseClockForPreview(value) {
+        const match = String(value || "").match(
+          /^(\d{2}:\d{2}(?::\d{2})?)(?: \(\+(\d+) (?:day|ng.y)\))? - (\d{2}:\d{2}(?::\d{2})?)(?: \(\+(\d+) (?:day|ng.y)\))?$/
+        );
+        if (!match) {
+          throw new Error("CLOCK không đúng định dạng: " + value);
+        }
+        function parseEndpoint(time, offset) {
+          const parts = time.split(":").map(Number);
+          if (
+            parts[0] > 23 ||
+            parts[1] > 59 ||
+            (parts.length === 3 && parts[2] > 59)
+          ) {
+            throw new Error("CLOCK có giờ không hợp lệ: " + value);
+          }
+          return {
+            time: time,
+            dayOffset: Number(offset || 0),
+            seconds: Number(offset || 0) * 86400 +
+              parts[0] * 3600 + parts[1] * 60 + (parts[2] || 0),
+          };
+        }
+        const start = parseEndpoint(match[1], match[2]);
+        const end = parseEndpoint(match[3], match[4]);
+        if (end.seconds <= start.seconds) {
+          throw new Error("CLOCK có thứ tự ngày không hợp lệ: " + value);
+        }
+        return { start: start, end: end };
+      }
+
+      function renderCalendarRows(items, containerId) {
+        const table = document.getElementById(containerId || "calendarTable");
+        const hourHeight = 48;
+        const dates = calendarDates(items);
+        const segmentsByDate = {};
+        dates.forEach(function (date) {
+          segmentsByDate[date] = [];
+        });
+
+        items.forEach(function (item) {
+          let date = item.startDate;
+          while (date <= item.endDate) {
+            const startMinute = date === item.startDate
+              ? timeAsMinutes(item.startTime)
+              : 0;
+            const endMinute = date === item.endDate
+              ? timeAsMinutes(item.endTime)
+              : 1440;
+            if (endMinute > startMinute && segmentsByDate[date]) {
+              segmentsByDate[date].push({
+                item: item,
+                start: startMinute,
+                end: endMinute,
+              });
+            }
+            if (date === item.endDate) break;
+            date = shiftDate(date, 1);
+          }
+        });
+
+        const headers = dates.map(function (date) {
+          return '<div class="calendar-day-header">' +
+            escapeHtml(weekdayAndDate(date)) + "</div>";
+        }).join("");
+        const hours = Array.from({ length: 24 }, function (_, hour) {
+          return '<div class="calendar-hour">' +
+            String(hour).padStart(2, "0") + ":00</div>";
+        }).join("");
+        const dayColumns = dates.map(function (date) {
+          return '<div class="calendar-day">' +
+            renderDayEvents(segmentsByDate[date], hourHeight) + "</div>";
+        }).join("");
+        table.innerHTML =
+          '<div class="calendar-grid" style="--day-count:' + dates.length +
+          "; --hour-height:" + hourHeight + 'px">' +
+          '<div class="calendar-corner"></div>' + headers +
+          '<div class="calendar-hours">' + hours + "</div>" +
+          dayColumns + "</div>" +
+          '<p class="muted calendar-note">Mỗi block có chiều cao theo thời lượng. ' +
+          "Task qua nửa đêm được tách qua cột ngày tiếp theo; các block chồng " +
+          "nhau được đặt cạnh nhau. Di chuột lên block để xem dữ liệu chi tiết.</p>";
+        table.classList.remove("hidden");
+      }
+
+      function renderDayEvents(segments, hourHeight) {
+        segments.sort(function (left, right) {
+          return left.start - right.start || right.end - left.end;
+        });
+        const clusters = [];
+        segments.forEach(function (segment) {
+          let cluster = clusters[clusters.length - 1];
+          if (!cluster || segment.start >= cluster.end) {
+            cluster = { end: segment.end, segments: [] };
+            clusters.push(cluster);
+          } else {
+            cluster.end = Math.max(cluster.end, segment.end);
+          }
+          cluster.segments.push(segment);
+        });
+
+        return clusters.map(function (cluster) {
+          const laneEnds = [];
+          cluster.segments.forEach(function (segment) {
+            let lane = laneEnds.findIndex(function (end) {
+              return end <= segment.start;
+            });
+            if (lane < 0) lane = laneEnds.length;
+            laneEnds[lane] = segment.end;
+            segment.lane = lane;
+          });
+          const laneCount = laneEnds.length;
+          return cluster.segments.map(function (segment) {
+            const item = segment.item;
+            const top = segment.start * hourHeight / 60;
+            const height = (segment.end - segment.start) * hourHeight / 60;
+            const left = segment.lane * 100 / laneCount;
+            const width = 100 / laneCount;
+            const style =
+              "top:" + top + "px;height:" + height + "px;left:calc(" +
+              left + "% + 2px);width:calc(" + width + "% - 4px);background:" +
+              calendarEventColor(item.colorName) + ";";
+            const tooltip = [
+              item.title,
+              item.date + " · STT " + item.sourceOrder,
+              item.startDate + " " + item.startTime + " - " +
+                item.endDate + " " + item.endTime,
+              item.durationHours + " giờ",
+              item.description,
+              item.status,
+            ].join("\n");
+            return '<div class="calendar-event" style="' + style +
+              '" title="' + escapeHtml(tooltip) + '">' +
+              "<strong>" + escapeHtml(item.title) + "</strong>" +
+              "<span>" + escapeHtml(item.startTime + "–" + item.endTime) +
+              "</span></div>";
+          }).join("");
+        }).join("");
+      }
+
+      function calendarDates(items) {
+        const dates = {};
+        items.forEach(function (item) {
+          dates[item.date] = true;
+          dates[item.startDate] = true;
+          if (item.endTime !== "00:00" && item.endTime !== "00:00:00") {
+            dates[item.endDate] = true;
+          }
+        });
+        const sorted = Object.keys(dates).sort();
+        if (!sorted.length) return [];
+        const result = [];
+        for (let date = sorted[0]; date <= sorted[sorted.length - 1]; date = shiftDate(date, 1)) {
+          result.push(date);
+        }
+        return result;
+      }
+
+      function timeAsMinutes(value) {
+        const parts = value.split(":").map(Number);
+        return parts[0] * 60 + parts[1] + (parts[2] || 0) / 60;
+      }
+
+      function shiftDate(value, offset) {
+        const parts = value.split("-").map(Number);
+        const date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2] + offset));
+        return date.getUTCFullYear() + "-" +
+          String(date.getUTCMonth() + 1).padStart(2, "0") + "-" +
+          String(date.getUTCDate()).padStart(2, "0");
+      }
+
+      function weekdayAndDate(value) {
+        const parts = value.split("-").map(Number);
+        const date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+        const weekday = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"][date.getUTCDay()];
+        return weekday + " · " + parts[2] + "/" + String(parts[1]).padStart(2, "0");
+      }
+
+      function calendarEventColor(colorName) {
+        return {
+          MAUVE: "#d7c2e8",
+          RED: "#f4c7c3",
+          GREEN: "#cde8d1",
+          YELLOW: "#fce8b2",
+          GRAY: "#dadce0",
+          "MÀU HOA ANH ĐÀO": "#f6c5d5",
+        }[colorName] || (colorName ? "#d7c2e8" : "#cfe2f3");
+      }
+
+      function makeTable(headers, rows) {
+        const head = "<thead><tr>" + headers.map(function (value) {
+          return "<th>" + escapeHtml(value) + "</th>";
+        }).join("") + "</tr></thead>";
+        const body = "<tbody>" + rows.map(function (row) {
+          return "<tr>" + row.map(function (value) {
+            return "<td>" + escapeHtml(value) + "</td>";
+          }).join("") + "</tr>";
+        }).join("") + "</tbody>";
+        return "<table>" + head + body + "</table>";
+      }
+
+      function escapeHtml(value) {
+        return String(value == null ? "" : value).replace(/[&<>"']/g, function (char) {
+          return {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            "\"": "&quot;",
+            "'": "&#39;",
+          }[char];
+        });
+      }
+
+      google.script.run
+        .withSuccessHandler(function (config) {
+          document.getElementById("sourceId").value = config.defaultSourceId;
+          document.getElementById("defaultStartTime").value =
+            config.defaultStartTime;
+          document.getElementById("breakMinutes").value =
+            config.defaultBreakMinutes;
+          document.getElementById("sleepStartTime").value =
+            config.sleepStartTime;
+          document.getElementById("sleepDurationHours").value =
+            config.sleepDurationHours;
+          document.getElementById("databaseInfo").textContent =
+            "Đích test cố định: " + config.databaseTitle;
+          document.getElementById("calendarInfo").textContent =
+            config.calendarTitle;
+          loadDatabaseTabs(config.lastWrittenTab);
+        })
+        .withFailureHandler(function (error) {
+          setStatus("sourceStatus", error.message || String(error), true);
+        })
+        .getUiConfig();
+
+      [
+        "sourceId",
+        "defaultStartTime",
+        "breakMinutes",
+        "sleepStartTime",
+        "sleepDurationHours",
+      ].forEach(function (id) {
+        document.getElementById(id).addEventListener("input", invalidatePreview);
+      });
+      document.getElementById("selectAllSyncDays").addEventListener("change", function () {
+        const checked = document.getElementById("selectAllSyncDays").checked;
+        document.querySelectorAll('input[name="syncDate"]').forEach(function (input) {
+          input.checked = checked;
+        });
+        invalidateSyncPreview();
+      });
+      ["deleteManaged", "createUpdate"].forEach(function (id) {
+        document.getElementById(id).addEventListener("change", invalidateSyncPreview);
+      });
+    </script>
+  </body>
+</html>

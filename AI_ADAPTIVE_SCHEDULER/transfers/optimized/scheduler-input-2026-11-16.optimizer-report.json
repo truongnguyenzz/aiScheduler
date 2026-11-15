@@ -1,0 +1,106 @@
+{
+  "engine": "Google OR-Tools CP-SAT (Main placement) + full-duration Secondary placement",
+  "engine_version": "9.15.6755",
+  "solver_status": "OPTIMAL",
+  "candidate_quality": "solver_with_conflicts",
+  "duration_reduction_phase_attempted": false,
+  "solve_seconds": 0.218,
+  "objective_value": 27240307.0,
+  "best_bound": 27240307.0,
+  "main_task_count": 61,
+  "secondary_task_count": 92,
+  "flexible_main_count": 41,
+  "reduced_main_count": 0,
+  "reduced_hours": 0,
+  "main_secondary_conflict_pair_count": 67,
+  "secondary_conflict_pair_count": 78,
+  "secondary_window_violation_count": 0,
+  "secondary_solver_status": "FEASIBLE",
+  "moved_secondary_count": 9,
+  "moved_secondary_tasks": [
+    {
+      "task_id": "ADP-D40B148A87201077296EC4D0",
+      "date": "2026-11-16",
+      "task_name": "Gỉải trí-1",
+      "from_period": "CHIỀU",
+      "to_period": "TỐI",
+      "clock": "17:30 - 18:00"
+    },
+    {
+      "task_id": "ADP-1E2260CD125D1F7AE4A72F0C",
+      "date": "2026-11-17",
+      "task_name": "Gỉải trí-1",
+      "from_period": "CHIỀU",
+      "to_period": "TỐI",
+      "clock": "21:50 - 22:20"
+    },
+    {
+      "task_id": "ADP-81968F1E2C87B1BFBFC25851",
+      "date": "2026-11-17",
+      "task_name": "Tắm gội",
+      "from_period": "CHIỀU",
+      "to_period": "TỐI",
+      "clock": "22:35 - 22:50"
+    },
+    {
+      "task_id": "ADP-F236B3E6700D38F1CEC0C32F",
+      "date": "2026-11-18",
+      "task_name": "Tắm gội",
+      "from_period": "CHIỀU",
+      "to_period": "TỐI",
+      "clock": "21:25 - 21:40"
+    },
+    {
+      "task_id": "ADP-987DD887A1317279401E3548",
+      "date": "2026-11-20",
+      "task_name": "Gỉải trí-1",
+      "from_period": "CHIỀU",
+      "to_period": "TỐI",
+      "clock": "21:10 - 21:40"
+    },
+    {
+      "task_id": "ADP-2FAFD4E2257F6FA69B3FADE3",
+      "date": "2026-11-20",
+      "task_name": "Tắm gội",
+      "from_period": "CHIỀU",
+      "to_period": "TỐI",
+      "clock": "21:40 - 21:55"
+    },
+    {
+      "task_id": "ADP-BB4008EA0664CEB37F97367B",
+      "date": "2026-11-21",
+      "task_name": "Tắm gội",
+      "from_period": "CHIỀU",
+      "to_period": "TỐI",
+      "clock": "22:20 - 22:35"
+    },
+    {
+      "task_id": "ADP-B53CC5059C94F3A70E381EA3",
+      "date": "2026-11-22",
+      "task_name": "Gỉải trí-1",
+      "from_period": "CHIỀU",
+      "to_period": "TỐI",
+      "clock": "17:45 - 18:15"
+    },
+    {
+      "task_id": "ADP-D22C57B5678344DEFEE0E240",
+      "date": "2026-11-22",
+      "task_name": "Tắm gội",
+      "from_period": "CHIỀU",
+      "to_period": "TỐI",
+      "clock": "22:10 - 22:25"
+    }
+  ],
+  "reduced_secondary_count": 0,
+  "reduced_secondary_minutes": 0,
+  "source_anchor_conflicts": [],
+  "generated_at": "2026-11-15T12:26:02.996377Z",
+  "input_file": "transfers/incoming/scheduler-input-2026-11-16.json",
+  "output_file": "transfers/optimized/scheduler-input-2026-11-16.optimized.json",
+  "input_sha256": "a4ccb8bb31f07bd2ad5a76aa171c64522dd491e3da54d68ea0cc54baf8cb5af0",
+  "validation_passed": false,
+  "validation_errors": [],
+  "validation_hard_errors": [],
+  "validation_timing_errors": [],
+  "candidate_method": "Full-source Main durations were solved separately; all Secondary durations preserved. Overlaps remain explicit for independent validation."
+}
