@@ -97,7 +97,7 @@
         </div>
         <div class="muted" id="databaseInfo"></div>
         <button id="previewButton" onclick="previewSource()">Đọc và xem trước</button>
-        <button id="writeButton" class="secondary" disabled onclick="writeDatabase()">
+        <button id="writeButton" class="secondary" onclick="writeDatabase()">
           Ghi vào Scheduler Database
         </button>
         <div class="transfer-controls">
@@ -186,8 +186,6 @@
             const element = document.getElementById(id);
             if (!element) return;
             element.disabled = busy ||
-              (id === "writeButton" &&
-                (!currentPreview || (currentPreview.scheduleWarnings || []).length > 0)) ||
               (id === "downloadButton" && !transferPackage) ||
               (id === "loadDatabaseTabButton" &&
                 !document.getElementById("databaseTabSelect").options.length) ||
@@ -283,7 +281,6 @@
         currentSyncPreview = null;
         transferPackage = null;
         document.getElementById("downloadButton").classList.add("hidden");
-        document.getElementById("writeButton").disabled = true;
         document.getElementById("calendarPreviewButton").disabled = true;
         document.getElementById("importButton").disabled = true;
         document.getElementById("sourcePreview").classList.add("hidden");
@@ -309,8 +306,7 @@
             currentTab = result.destinationTab;
             currentScheduleSettings = settings;
             setBusy(false);
-            document.getElementById("writeButton").disabled =
-              (result.scheduleWarnings || []).length > 0;
+            document.getElementById("writeButton").disabled = false;
             document.getElementById("calendarPreviewButton").disabled = true;
             setStatus(
               "sourceStatus",
@@ -331,7 +327,7 @@
                   ? "\n\nCảnh báo xem trước (" +
                     result.scheduleWarnings.length + "):\n• " +
                     result.scheduleWarnings.join("\n• ") +
-                    "\nCác khối chồng lấn vẫn được hiển thị. Ghi vào Database tạm khóa; hãy tải JSON để tiếp tục chỉnh lịch."
+                    "\nCác khối chồng lấn vẫn được hiển thị. Bạn vẫn có thể ghi snapshot vào Scheduler Database; hãy kiểm tra kỹ lịch trước khi tiếp tục import Calendar."
                   : ""),
               false,
               (result.scheduleWarnings || []).length > 0
